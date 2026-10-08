@@ -2,7 +2,7 @@
 # Cye
 
 Cye is a general-purpose imperative procedural programming language,
-replicating the semantics of C and getting rid of its backwards compatibility.
+replicating the semantics of C and getting rid of its backward compatibility.
 
 In other words, Cye is the new C but there is nothing new in it.
 
