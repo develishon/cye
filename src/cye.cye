@@ -1,0 +1,4331 @@
+// cye.cye
+
+// BUILD:
+// 1. cye -o cye.c cye.cye 
+// 2. gcc -mconsole -nostdlib -o cye.exe -e_start -Wall -Wextra -std=c89 -pedantic cye.c -lkernel32
+//  OR
+// 2. tcc -o cye.exe cye.c
+// NOTE: tcc automatically detects _start as the entry-point
+
+// You don't have a Cye compiler? Bootstrap it!
+
+// TODO:
+// - make sure c_name doesn't use the same name twice
+// - fix the warning "set but not used" in auto-generated C code
+// - fix the warning "statement with no effect" in auto-generated C code
+// - fix struct requiring being declared at the top of the source file
+// - add postfix versions of prefix +, -, and ^ operators
+// - remove c_string construct from the language
+// - conditional compilation alternative to #if
+
+// structs
+
+c_typedef Arena : struct
+{
+  at       : *u8;
+  pushed   : s64;
+  commited : s64;
+  reserved : s64;
+};
+
+c_typedef Token : struct
+{
+  at         : *u8;
+  size       : s64;
+  token_kind : s64;
+  file       : *u8;
+};
+
+
+c_typedef Type : struct
+{
+  type_kind : s64;
+  token : *Token;
+  name_token_opt : *Token;
+  c_name_opt : *u8;
+  struct_c_name : *u8;
+  
+  sub_type : *Type;
+  
+  num_params : s64;
+  params     : **Type;
+  
+  num_members : s64;
+  members     : **Type;
+};
+
+c_typedef Symbol : struct
+{
+  token           : *Token;
+  type            : *Type;
+  ast_node_as_void_ptr : *void; // TODO: type *Ast_Node
+  c_name_string   : *u8;
+  c_extern_token  : *Token;
+  c_typedef_token : *Token;
+  storage         : s64;
+  local_is_active : u64; // STORAGE_LOCAL only
+  num_uses        : s64;
+  c_enum_value    : s64; // STORAGE_C_ENUM only
+};
+
+c_typedef Parser : struct
+{
+  before_first : *Token;
+  after_last   : *Token;
+  tokens       : *Token;
+  num_tokens   : s64;
+  index        : s64;
+};
+
+c_typedef Scope : struct
+{
+  symbols     : **Symbol;
+  num_symbols : s64;
+  parent      : *Scope;
+};
+
+c_typedef Expr_Value : struct
+{
+  token        : *Token;
+  type         : *Type;
+  as_u64       : u64;
+  is_lvalue    : u64;
+  is_constexpr : u64;
+};
+
+c_typedef Ast_Node : struct
+{
+  node_kind : s64;
+  token     : *Token;
+
+  expr_0 : *Ast_Node;
+  // unary
+  // lhs in binary
+  // function in a call
+  // return value (opt.)
+  // return type (opt.)
+  // condition in while/do-while/if
+  // c_for init
+  
+  expr_1 : *Ast_Node;
+  // rhs in binary
+  // c_for condition
+  
+  expr_2 : *Ast_Node;
+  // c_for reinit
+  
+  stmt_0 : *Ast_Node;
+  // function body
+  // if true
+  // while
+  // do-while
+  // break with (opt.)
+  // continue with (opt.)
+  // c_for
+  
+  stmt_1 : *Ast_Node;
+  // else
+  
+  num_items : s64;
+  items     : **Ast_Node;
+  // arguments
+  // parameters
+  // statements
+  // globals
+  
+  symbol_by_name : *Symbol; // node_kind == `node primary name`
+  
+  value : Expr_Value;
+  scope : Scope; // node_kind == `node statement root` or == `node statement list` or == `node statement c_for`
+  
+  struct_c_name : *u8;
+};
+
+c_enum
+{
+  COMPLAIN_FATAL_ERROR;
+  COMPLAIN_NOTE;
+  COMPLAIN_WARNING;
+  COMPLAIN_ERROR;
+  COMPLAIN_ENUM_COUNT;
+}
+
+c_enum // Symbol.storage
+{
+  STORAGE_UNDEFINED;
+  STORAGE_STATIC;
+  STORAGE_EXTERN;
+  STORAGE_LOCAL;
+  STORAGE_C_TYPEDEF;
+  STORAGE_C_ENUM;
+}
+
+c_enum // Token.token_kind
+{
+  // misc.:
+  `token invalid`;
+  `token integer`;
+  `token string`;
+  `token character`;
+  `token name`;
+  // keywords:
+  `token u8`;
+  `token s8`;
+  `token or`;
+  `token if`;
+  `token do`;
+  `token u64`;
+  `token u32`;
+  `token u16`;
+  `token s64`;
+  `token s32`;
+  `token s16`;
+  `token f64`;
+  `token f32`;
+  `token and`;
+  `token not`;
+  `token void`;
+  `token null`;
+  `token else`;
+  `token enum`;
+  `token cast`;
+  `token while`;
+  `token break`;
+  `token unoin`;
+  `token c_for`;
+  `token return`;
+  `token c_name`;
+  `token struct`;
+  `token c_load`;
+  `token c_enum`;
+  `token size_of`;
+  `token type_of`;
+  `token c_extern`;
+  `token c_string`;
+  `token continue`;
+  `token c_dbgpos`;
+  `token c_typedef`;
+  `token alignment_of`;
+  // punctuators:
+  `token <<=`;
+  `token >>=`;
+  `token +=`;
+  `token -=`;
+  `token *=`;
+  `token /=`;
+  `token %=`;
+  `token &=`;
+  `token ^=`;
+  `token |=`;
+  `token <=`;
+  `token >=`;
+  `token ==`;
+  `token !=`;
+  `token <<`;
+  `token >>`;
+  `token ->`;
+  `token .*`;
+  `token .&`;
+  `token +`;
+  `token -`;
+  `token *`;
+  `token /`;
+  `token %`;
+  `token &`;
+  `token ^`;
+  `token |`;
+  `token <`;
+  `token >`;
+  `token =`;
+  `token ;`;
+  `token .`;
+  `token :`;
+  `token ,`;
+  `token (`;
+  `token )`;
+  `token {`;
+  `token }`;
+  `token [`;
+  `token ]`;
+}
+
+c_enum // Ast_Node.node_kind
+{
+  `node invalid`;
+  //
+  `node statement root`;
+  `node statement list`;
+  `node statement return`;
+  `node statement break`;
+  `node statement continue`;
+  `node statement while`;
+  `node statement do-while`;
+  `node statement if-else`;
+  `node statement c_for`;
+  //
+  `node primary name`;
+  `node primary null`;
+  `node primary void`;
+  `node primary u64`;
+  `node primary u32`;
+  `node primary u16`;
+  `node primary u8`;
+  `node primary s64`;
+  `node primary s32`;
+  `node primary s16`;
+  `node primary s8`;
+  `node primary c_dbgpos`;
+  `node primary integer`;
+  `node primary character`;
+  `node primary c_string`;
+  //
+  `node unary +`;
+  `node unary -`;
+  `node unary ^`;
+  `node unary *`;
+  `node unary not`;
+  `node unary size_of`;
+  `node unary alignment_of`;
+  `node unary .*`;
+  `node unary .&`;
+  //
+  `node binary :`;
+  `node binary +`;
+  `node binary -`;
+  `node binary *`;
+  `node binary /`;
+  `node binary %`;
+  `node binary &`;
+  `node binary ^`;
+  `node binary |`;
+  `node binary <<`;
+  `node binary >>`;
+  `node binary .`;
+  `node binary ==`;
+  `node binary !=`;
+  `node binary <=`;
+  `node binary >=`;
+  `node binary <`;
+  `node binary >`;
+  `node binary index`;
+  `node binary and`;
+  `node binary or`;
+  `node binary =`;
+  `node binary +=`;
+  `node binary -=`;
+  `node binary *=`;
+  `node binary /=`;
+  `node binary %=`;
+  `node binary &=`;
+  `node binary ^=`;
+  `node binary |=`;
+  `node binary <<=`;
+  `node binary >>=`;
+  `node binary cast`;
+  //
+  `node function type`;
+  `node function call`;
+  `node struct`;
+  `node c_enum`;
+}
+
+c_enum // Type.type_kind
+{
+  TYPE_INVALID;
+  TYPE_S64;
+  TYPE_S32;
+  TYPE_S16;
+  TYPE_S8;
+  TYPE_U64;
+  TYPE_U32;
+  TYPE_U16;
+  TYPE_U8;
+  TYPE_VOID;
+  TYPE_POINTER_TO;
+  TYPE_FUNCTION;
+  TYPE_STRUCT;
+}
+
+//
+
+keep_arena : *Arena;
+temp_arena : *Arena;
+
+g_next_address : s64;
+option_print_actual_names : u64;
+
+g_type_s64 : Type;
+g_type_u64 : Type;
+g_type_u32 : Type;
+g_type_u8 : Type;
+g_type_void : Type;
+g_type_void_ptr : Type;
+g_type_u8_ptr : Type;
+
+//-------------------------------------------------------------------------------------------------
+// cye.cye
+//-------------------------------------------------------------------------------------------------
+
+main : () -> void
+{
+  console_init();
+  
+  option_print_actual_names = 1;
+  
+  keep_arena = arena_create(1024 * 1024 * 1024); // 1 GB
+  temp_arena = arena_create(1024 * 1024 * 1024); // 1 GB
+  
+  // parse command-line arguments:
+  input_path  : *u8; input_path  = c_string "a.cye";
+  output_path : *u8; output_path = c_string "a.c";
+  {
+    num_input_files : s64;
+    argument_array : **u8; argument_array = command_get_arguments(keep_arena, temp_arena);
+    
+    c_for argument_index : s64; argument_array[argument_index] != null; argument_index += 1;
+    {
+      argument : *u8; argument = argument_array[argument_index];
+      length : s64; length = cstring_length(argument);
+      
+      if length == 2 and memory_equal(argument, c_string "-o", length)
+      {
+        error_assert(c_dbgpos, argument_array[argument_index + 1] != null);
+        argument_index += 1;
+        output_path = argument_array[argument_index];
+      }
+      else
+      {
+        input_path = argument;
+        num_input_files += 1;
+        error_assert(c_dbgpos, num_input_files <= 1);
+      }
+    }
+  }
+  
+  // print the task
+  if 0
+  {
+    console_error_print_cstring(c_string "  TASK:\ninput: ");
+    console_error_print_cstring(input_path);
+    console_error_print_cstring(c_string "\noutput: ");
+    console_error_print_cstring(output_path);
+    console_error_print_cstring(c_string "\n\n");
+  }
+  
+  // prepare builtin types
+  
+  g_type_s64.type_kind = TYPE_S64;
+  g_type_u64.type_kind = TYPE_U64;
+  g_type_u32.type_kind = TYPE_U32;
+  g_type_u8.type_kind = TYPE_U8;
+  g_type_void.type_kind = TYPE_VOID;
+  
+  g_type_void_ptr.type_kind = TYPE_POINTER_TO;
+  g_type_void_ptr.sub_type = g_type_void.&;
+  
+  g_type_u8_ptr.type_kind = TYPE_POINTER_TO;
+  g_type_u8_ptr.sub_type = g_type_u8.&;
+  
+  // front end
+  
+  root : *Ast_Node; root = language_frontend(input_path);
+  
+  // generate C
+  output_arena : *Arena;
+  output_arena = arena_create(1024 * 1024 * 1024); // 1 GB
+  
+  c89_backend(root, output_arena);
+  
+  ok_1 : u32; ok_1 = file_write_all_bytes(output_path, output_arena.pushed, output_arena.at);
+  resource_assert(c_dbgpos, ok_1);
+  
+  // the end:
+  console_error_print_cstring(c_string "SUCCESS!\n");
+}
+
+type_alignment_of : (type: *Type) -> s64
+{
+  debug_assert(c_dbgpos, type != null);
+  
+  the_kind : s64; the_kind = type.type_kind;
+  
+  if the_kind == TYPE_POINTER_TO                   return 8;
+  if the_kind == TYPE_U64 or the_kind == TYPE_S64  return 8;
+  if the_kind == TYPE_U32 or the_kind == TYPE_S32  return 4;
+  if the_kind == TYPE_U16 or the_kind == TYPE_S16  return 2;
+  if the_kind == TYPE_U8  or the_kind == TYPE_S8   return 1;
+  
+  if the_kind == TYPE_STRUCT
+  {
+    struct_alignment : s64; struct_alignment = 1;
+    
+    c_for i: s64; i < type.num_members; i += 1;
+    {
+      member: *Type; member = type.members[i];
+      
+      member_alignment : s64; member_alignment = type_alignment_of(member);
+      
+      if member_alignment > struct_alignment  struct_alignment = member_alignment;
+    }
+    
+    return struct_alignment;
+  }
+  
+  if type.token  complain(0, type.token, c_string "can't compute type_alignment_of");
+  debug_assert(c_dbgpos, 0);
+  return 0;
+}
+
+type_size_of : (type: *Type) -> s64
+{
+  debug_assert(c_dbgpos, type != null);
+  
+  the_kind : s64; the_kind = type.type_kind;
+  
+  if the_kind == TYPE_POINTER_TO                   return 8;
+  if the_kind == TYPE_U64 or the_kind == TYPE_S64  return 8;
+  if the_kind == TYPE_U32 or the_kind == TYPE_S32  return 4;
+  if the_kind == TYPE_U16 or the_kind == TYPE_S16  return 2;
+  if the_kind == TYPE_U8  or the_kind == TYPE_S8   return 1;
+  
+  if the_kind == TYPE_STRUCT
+  {
+    struct_size : s64;
+    struct_alignment : s64; struct_alignment = 1;
+    
+    c_for i: s64; i < type.num_members; i += 1;
+    {
+      member: *Type; member = type.members[i];
+      
+      member_alignment : s64; member_alignment = type_alignment_of(member);
+      
+      if member_alignment > struct_alignment  struct_alignment = member_alignment;
+      
+      struct_size = s64_align(struct_size, member_alignment);
+      struct_size += type_size_of(member);
+    }
+    
+    struct_size = s64_align(struct_size, struct_alignment);
+    return struct_size;
+  }
+  
+  if type.token complain(0, type.token, c_string "can't compute type_size_of");
+  debug_assert(c_dbgpos, 0);
+  return 0;
+}
+
+type_explicit_cast_is_possible : (dst: *Type, src: *Type) -> u64
+{
+  if dst.type_kind == TYPE_FUNCTION or dst.type_kind == TYPE_STRUCT  return 0;
+  
+  return 1;
+}
+
+bytes_from_extended_text : (length: s64, text: *u8, result_arena: *Arena) -> s64
+{
+  size : s64;
+  
+  c_for ti: s64; ti < length; ti += 1;
+  {
+    byte_value: u8;
+    
+    if text[ti] == '\\'
+    {
+      ti += 1;
+      debug_assert(c_dbgpos, ti < length);
+      
+           if text[ti] == '\\'  byte_value = '\\';
+      else if text[ti] == '"'   byte_value = '"';
+      else if text[ti] == '\''  byte_value = '\'';
+      else if text[ti] == '`'   byte_value = '`';
+      else if text[ti] == 'n'   byte_value = '\n';
+      else
+      {
+        debug_assert(c_dbgpos, ascii_is_uppercase_hexadecimal_digit(text[ti]));
+        
+        d0 : u64;
+        d1 : u64;
+        
+        if ti + 1 < length and ascii_is_uppercase_hexadecimal_digit(text[ti + 1])
+        {
+          d0 = ascii_digit_to_int(text[ti + 0]);
+          d1 = ascii_digit_to_int(text[ti + 1]);
+          ti += 1;
+        }
+        else
+        {
+          d1 = ascii_digit_to_int(text[ti + 0]);
+        }
+        
+        debug_assert(c_dbgpos, d0 < 16);
+        debug_assert(c_dbgpos, d1 < 16);
+        byte_value = (d0 << 4) | (d1); // TODO: remove the parenthesis
+      }
+    }
+    else
+    {
+      byte_value = text[ti];
+    }
+    
+    arena_push_copy(result_arena, size_of(u8), byte_value.&);
+    size += 1;
+  }
+  
+  return size;
+}
+
+declaration_from_type_and_center : (type: *Type, center: *u8, cstring_arena: *Arena) -> *u8
+{
+  result : *u8;
+  type_kind : s64; type_kind = type.type_kind;
+  
+  simple_type_c_string : *u8;
+  
+       if type_kind == TYPE_U64   simple_type_c_string = c_string "u64";
+  else if type_kind == TYPE_U32   simple_type_c_string = c_string "u32";
+  else if type_kind == TYPE_U16   simple_type_c_string = c_string "u16";
+  else if type_kind == TYPE_U8    simple_type_c_string = c_string "u8";
+  else if type_kind == TYPE_S64   simple_type_c_string = c_string "s64";
+  else if type_kind == TYPE_S32   simple_type_c_string = c_string "s32";
+  else if type_kind == TYPE_S16   simple_type_c_string = c_string "s16";
+  else if type_kind == TYPE_S8    simple_type_c_string = c_string "s8";
+  else if type_kind == TYPE_VOID  simple_type_c_string = c_string "void";
+  
+  if simple_type_c_string
+  {
+    result = arena_get_top(cstring_arena);
+    arena_print_cstring(cstring_arena, simple_type_c_string);
+    arena_print_cstring(cstring_arena, c_string " ");
+    arena_print_cstring(cstring_arena, center);
+    arena_push(cstring_arena, 1);
+  }
+  else if type_kind == TYPE_POINTER_TO
+  {
+    new_center : *u8; new_center = arena_get_top(cstring_arena);
+    arena_print_cstring(cstring_arena, c_string "(*");
+    arena_print_cstring(cstring_arena, center);
+    arena_print_cstring(cstring_arena, c_string ")");
+    arena_push(cstring_arena, 1);
+    
+    result = declaration_from_type_and_center(type.sub_type, new_center, cstring_arena);
+  }
+  else if type_kind == TYPE_FUNCTION
+  {
+    list : *u8;
+    
+    c_for i: s64; i < type.num_params; i += 1;
+    {
+      param_type : *Type; param_type = type.params[i];
+      param_center : *u8; param_center = c_string "";
+      
+      if param_type.name_token_opt
+      {
+        param_center = arena_get_top(cstring_arena);
+        
+        debug_assert(c_dbgpos, param_type.c_name_opt != null);
+        arena_print_cstring(cstring_arena, param_type.c_name_opt);
+        
+        if option_print_actual_names
+        {
+          arena_print_cstring(cstring_arena, c_string "/*");
+          arena_print_bytes(cstring_arena, param_type.name_token_opt.size, param_type.name_token_opt.at);
+          arena_print_cstring(cstring_arena, c_string "*/");
+        }
+        
+        arena_push(cstring_arena, 1);
+      }
+      
+      param_declaration : *u8;
+      param_declaration = declaration_from_type_and_center(param_type, param_center, cstring_arena);
+      
+      new_list : *u8; new_list = arena_get_top(cstring_arena);
+      
+      if list
+      {
+        arena_print_cstring(cstring_arena, list);
+        arena_print_cstring(cstring_arena, c_string ", ");
+      }
+      
+      arena_print_cstring(cstring_arena, param_declaration);
+      arena_push(cstring_arena, 1);
+      
+      list = new_list;
+    }
+    
+    new_center : *u8; new_center = arena_get_top(cstring_arena);
+    arena_print_cstring(cstring_arena, center);
+    arena_print_cstring(cstring_arena, c_string "(");
+    
+    if list  arena_print_cstring(cstring_arena, list);
+    else     arena_print_cstring(cstring_arena, c_string "void");
+    
+    arena_print_cstring(cstring_arena, c_string ")");
+    arena_push(cstring_arena, 1);
+    
+    result = declaration_from_type_and_center(type.sub_type, new_center, cstring_arena);
+  }
+  else if type_kind == TYPE_STRUCT
+  {
+    result = arena_get_top(cstring_arena);
+    debug_assert(c_dbgpos, type.struct_c_name != null);
+    arena_print_cstring(cstring_arena, type.struct_c_name);
+    arena_print_cstring(cstring_arena, c_string " ");
+    arena_print_cstring(cstring_arena, center);
+    arena_push(cstring_arena, 1);
+  }
+  else
+  {
+    if type.token  complain(0, type.token, c_string "can't make the declaration from this");
+    debug_assert(c_dbgpos, 0);
+  }
+  
+  debug_assert(c_dbgpos, result != null);
+  return result;
+}
+
+print_declaration_center_from_symbol : (symbol: *Symbol, result_arena: *Arena) -> *u8
+{
+  center : *u8; center = arena_get_top(result_arena);
+  
+  arena_print_cstring(result_arena, symbol.c_name_string);
+  
+  if option_print_actual_names
+  {
+    arena_print_cstring(result_arena, c_string "/*");
+    arena_print_bytes(result_arena, symbol.token.size, symbol.token.at);
+    arena_print_cstring(result_arena, c_string "*/");
+  }
+  
+  arena_push(result_arena, 1);
+  return center;
+}
+
+c89_compile_integer_constant : (value: u64, output_arena: *Arena) -> void
+{
+  if value <= 0xFFFFFFFF
+  {
+    arena_print_cstring(output_arena, c_string "(s64)0x");
+    arena_print_u64(output_arena, value, 16, 0);
+  }
+  else
+  {
+    debug_assert(c_dbgpos, 0);
+    // TODO: implement 64-bit integer constants
+    // arena_print_cstring(output_arena, c_string("(((u64)0x"));
+    // arena_print_u64(output_arena, (value >> 32) & 0xFFFFFFFF, 16, 0);
+    // arena_print_cstring(output_arena, c_string(" << 32) | ((u64)0x"));
+    // arena_print_u64(output_arena, (value >> 0 ) & 0xFFFFFFFF, 16, 0);
+    // arena_print_cstring(output_arena, c_string("))"));
+  }
+}
+
+c89_backend : (root: *Ast_Node, output_arena: *Arena) -> void
+{
+  main_symbol : *Symbol;
+  main_symbol = array_find_symbol_by_name(root.scope.num_symbols, root.scope.symbols, 4, c_string "main");
+  
+  if main_symbol == null  complain(0, null, c_string "'main' function must be defined");
+  
+  main_symbol.num_uses += 1;
+
+  arena_print_cstring(output_arena, c_string "\n");
+  arena_print_cstring(output_arena, c_string "#include <stddef.h>\n");
+  arena_print_cstring(output_arena, c_string "#include <stdint.h>\n");
+  arena_print_cstring(output_arena, c_string "\n");
+  arena_print_cstring(output_arena, c_string "typedef uint8_t  u8;\n");
+  arena_print_cstring(output_arena, c_string "typedef uint16_t u16;\n");
+  arena_print_cstring(output_arena, c_string "typedef uint32_t u32;\n");
+  arena_print_cstring(output_arena, c_string "typedef uint64_t u64;\n");
+  arena_print_cstring(output_arena, c_string "typedef int8_t   s8;\n");
+  arena_print_cstring(output_arena, c_string "typedef int16_t  s16;\n");
+  arena_print_cstring(output_arena, c_string "typedef int32_t  s32;\n");
+  arena_print_cstring(output_arena, c_string "typedef int64_t  s64;\n");
+  arena_print_cstring(output_arena, c_string "\n");
+  
+  c89_compile_statement_recursively(root, 0, output_arena);
+  
+  // the runtime:
+  
+  arena_print_cstring(output_arena, c_string "\n");
+  arena_print_cstring(output_arena, c_string "void _start(void)\n");
+  arena_print_cstring(output_arena, c_string "{\n");
+  arena_print_cstring(output_arena, c_string "  extern void ExitProcess(u32 status);\n");
+  arena_print_cstring(output_arena, c_string "  \n");
+  
+  num_voided : s64;
+  
+  c_for i: s64; i < root.scope.num_symbols; i += 1;
+  {
+    symbol : *Symbol; symbol = root.scope.symbols[i];
+    
+    if symbol.num_uses == 0 and symbol.storage == STORAGE_STATIC
+    {
+      arena_print_cstring(output_arena, c_string "  (void) ");
+      arena_print_cstring(output_arena, symbol.c_name_string);
+      arena_print_cstring(output_arena, c_string ";\n");
+      num_voided += 1;
+    }
+  }
+  
+  if num_voided > 0  arena_print_cstring(output_arena, c_string "  \n");
+  
+  debug_assert(c_dbgpos, main_symbol.type != null);
+  
+  if main_symbol.type.type_kind != TYPE_FUNCTION
+  or main_symbol.type.sub_type.type_kind != TYPE_VOID
+  or main_symbol.type.num_params != 0
+    complain(0, main_symbol.token, c_string "'main' must be a function of type '() -> void'");
+  
+  arena_print_cstring(output_arena, c_string "  ");
+  arena_print_cstring(output_arena, main_symbol.c_name_string);
+  arena_print_cstring(output_arena, c_string "();\n");
+  arena_print_cstring(output_arena, c_string "  ExitProcess(0);\n");
+  arena_print_cstring(output_arena, c_string "}\n");
+  arena_print_cstring(output_arena, c_string "\n");
+  arena_print_cstring(output_arena, c_string "\n");
+  arena_print_cstring(output_arena, c_string "\n");
+}
+
+c89_compile_expression_recursively : (expr: *Ast_Node, output_arena: *Arena) -> void
+{
+  debug_assert(c_dbgpos, expr != null);
+  debug_assert(c_dbgpos, output_arena != null);
+  
+  expr_kind : s64; expr_kind = expr.node_kind;
+  
+  binary_cstring : *u8;
+  unary_cstring : *u8;
+  
+       if expr_kind == `node binary +`    binary_cstring = c_string "+";
+  else if expr_kind == `node binary -`    binary_cstring = c_string "-";
+  else if expr_kind == `node binary *`    binary_cstring = c_string "*";
+  else if expr_kind == `node binary /`    binary_cstring = c_string "/";
+  else if expr_kind == `node binary %`    binary_cstring = c_string "%";
+  else if expr_kind == `node binary &`    binary_cstring = c_string "&";
+  else if expr_kind == `node binary ^`    binary_cstring = c_string "^";
+  else if expr_kind == `node binary |`    binary_cstring = c_string "|";
+  else if expr_kind == `node binary <`    binary_cstring = c_string "<";
+  else if expr_kind == `node binary >`    binary_cstring = c_string ">";
+  else if expr_kind == `node binary =`    binary_cstring = c_string "=";
+  else if expr_kind == `node binary +=`   binary_cstring = c_string "+=";
+  else if expr_kind == `node binary -=`   binary_cstring = c_string "-=";
+  else if expr_kind == `node binary *=`   binary_cstring = c_string "*=";
+  else if expr_kind == `node binary /=`   binary_cstring = c_string "/=";
+  else if expr_kind == `node binary %=`   binary_cstring = c_string "%=";
+  else if expr_kind == `node binary &=`   binary_cstring = c_string "&=";
+  else if expr_kind == `node binary ^=`   binary_cstring = c_string "^=";
+  else if expr_kind == `node binary |=`   binary_cstring = c_string "|=";
+  else if expr_kind == `node binary <=`   binary_cstring = c_string "<=";
+  else if expr_kind == `node binary >=`   binary_cstring = c_string ">=";
+  else if expr_kind == `node binary ==`   binary_cstring = c_string "==";
+  else if expr_kind == `node binary !=`   binary_cstring = c_string "!=";
+  else if expr_kind == `node binary <<`   binary_cstring = c_string "<<";
+  else if expr_kind == `node binary >>`   binary_cstring = c_string ">>";
+  else if expr_kind == `node binary <<=`  binary_cstring = c_string "<<=";
+  else if expr_kind == `node binary >>=`  binary_cstring = c_string ">>=";
+  else if expr_kind == `node binary and`  binary_cstring = c_string "&&";
+  else if expr_kind == `node binary or`   binary_cstring = c_string "||";
+  else if expr_kind == `node unary +`    unary_cstring = c_string "+";
+  else if expr_kind == `node unary -`    unary_cstring = c_string "-";
+  else if expr_kind == `node unary ^`    unary_cstring = c_string "~";
+  else if expr_kind == `node unary not`  unary_cstring = c_string "!";
+  else if expr_kind == `node unary .*`   unary_cstring = c_string "*";
+  else if expr_kind == `node unary .&`   unary_cstring = c_string "&";
+  
+  if binary_cstring
+  {
+    debug_assert(c_dbgpos, expr.expr_0 != null);
+    debug_assert(c_dbgpos, expr.expr_1 != null);
+    
+    arena_print_cstring(output_arena, c_string "(");
+    c89_compile_expression_recursively(expr.expr_0, output_arena);
+    arena_print_cstring(output_arena, c_string ") ");
+    arena_print_cstring(output_arena, binary_cstring);
+    arena_print_cstring(output_arena, c_string " (");
+    c89_compile_expression_recursively(expr.expr_1, output_arena);
+    arena_print_cstring(output_arena, c_string ")");
+  }
+  else if unary_cstring
+  {
+    debug_assert(c_dbgpos, expr.expr_0 != null);
+    
+    arena_print_cstring(output_arena, unary_cstring);
+    arena_print_cstring(output_arena, c_string "(");
+    c89_compile_expression_recursively(expr.expr_0, output_arena);
+    arena_print_cstring(output_arena, c_string ")");
+  }
+  else if expr_kind == `node primary name`
+  {
+    symbol: *Symbol; symbol = expr.symbol_by_name;
+    debug_assert(c_dbgpos, symbol != null);
+    
+    if symbol.storage != STORAGE_C_ENUM  arena_print_cstring(output_arena, symbol.c_name_string);
+    else                                 c89_compile_integer_constant(symbol.c_enum_value, output_arena);
+  }
+  else if expr_kind == `node function call`
+  {
+    arena_print_cstring(output_arena, c_string "(");
+    c89_compile_expression_recursively(expr.expr_0, output_arena);
+    arena_print_cstring(output_arena, c_string ")");
+    
+    function_type: *Type; function_type = expr.expr_0.value.type; // TODO: let the frontend save it for you?
+    
+    if function_type.type_kind == `node unary *`  function_type = function_type.sub_type;
+    
+    arena_print_cstring(output_arena, c_string "(");
+    
+    c_for i: s64; i < expr.num_items; i += 1;
+    {
+      arg : *Ast_Node; arg = expr.items[i];
+      arg_value : Expr_Value; arg_value = rvalue_from(arg.value); // TODO: let the frontend save it for you?
+      param_type : *Type; param_type = function_type.params[i];
+      
+      if type_kind_is_integer(param_type.type_kind) and type_kind_is_integer(arg_value.type.type_kind)
+      {
+        dst_size : s64; dst_size = type_size_of(param_type);
+        src_size : s64; src_size = type_size_of(arg_value.type);
+        
+        if dst_size < src_size
+        {
+          arena_print_cstring(output_arena, c_string "(");
+          
+          type_kind : s64; type_kind = param_type.type_kind;
+          
+               if type_kind == TYPE_U64  arena_print_cstring(output_arena, c_string "u64");
+          else if type_kind == TYPE_U32  arena_print_cstring(output_arena, c_string "u32");
+          else if type_kind == TYPE_U16  arena_print_cstring(output_arena, c_string "u16");
+          else if type_kind == TYPE_U8   arena_print_cstring(output_arena, c_string "u8" );
+          else if type_kind == TYPE_S64  arena_print_cstring(output_arena, c_string "s64");
+          else if type_kind == TYPE_S32  arena_print_cstring(output_arena, c_string "s32");
+          else if type_kind == TYPE_S16  arena_print_cstring(output_arena, c_string "s16");
+          else if type_kind == TYPE_S8   arena_print_cstring(output_arena, c_string "s8" );
+          else debug_assert(c_dbgpos, 0);
+          
+          arena_print_cstring(output_arena, c_string ")");
+        }
+      }
+      
+      arena_print_cstring(output_arena, c_string "(");
+      c89_compile_expression_recursively(arg, output_arena);
+      arena_print_cstring(output_arena, c_string ")");
+      
+      if i + 1 < expr.num_items  arena_print_cstring(output_arena, c_string ", ");
+    }
+    
+    arena_print_cstring(output_arena, c_string ")");
+  }
+  else if expr_kind == `node primary null`
+  {
+    arena_print_cstring(output_arena, c_string "NULL");
+  }
+  else if expr_kind == `node primary c_string`
+  {
+    bytes : *u8; bytes = arena_get_top(temp_arena);
+    size : s64; size = bytes_from_extended_text(expr.token.size - 2, expr.token.at + 1, temp_arena);
+    
+    arena_print_cstring(output_arena, c_string "(u8 *)\"");
+    
+    c_for i: s64; i < size; i += 1;
+    {
+      arena_print_cstring(output_arena, c_string "\\x");
+      arena_print_u64(output_arena, bytes[i], 16, 2);
+    }
+    
+    arena_print_cstring(output_arena, c_string "\"");
+    arena_pop_to_pointer(temp_arena, bytes);
+  }
+  else if expr_kind == `node primary integer`
+  {
+    debug_assert(c_dbgpos, expr.value.is_constexpr);
+    c89_compile_integer_constant(expr.value.as_u64, output_arena);
+  }
+  else if expr_kind == `node primary character`
+  {
+    bytes : *u8; bytes = arena_get_top(temp_arena);
+    size : s64; size = bytes_from_extended_text(expr.token.size - 2, expr.token.at + 1, temp_arena);
+    value : u64;
+    
+    c_for i: s64; i < size; i += 1;
+    {
+      // TODO: value <<= 8;
+      // TODO: value |= bytes[i];
+      
+      value *= 256;
+      value += bytes[i];
+    }
+    
+    arena_pop_to_pointer(temp_arena, bytes);
+    c89_compile_integer_constant(value, output_arena);
+  }
+  else if expr_kind == `node primary c_dbgpos`
+  {
+    bytes : *u8; bytes = arena_get_top(temp_arena);
+    
+    //
+    
+    row: s64; row = 1;
+    col: s64; col = 1;
+    
+    cp : *u8; cp = expr.token.file; // TODO: put inside the c_for's init
+    c_for ; cp != expr.token.at; cp += 1;
+    {
+      if cp.* == '\n'
+      {
+        row += 1;
+        col = 0;
+      }
+      
+      col += 1;
+    }
+    
+    line_at : *u8; line_at = expr.token.at - (col - 1);
+    line_size : s64;
+    
+    while line_at[line_size] != '\0' and line_at[line_size] != '\n'
+      line_size += 1;
+    
+    arena_print_s64(temp_arena, row, 10, 0);
+    arena_print_cstring(temp_arena, c_string ": c_dbgpos: ");
+    arena_print_bytes(temp_arena, line_size, line_at);
+    
+    size : s64; size = arena_get_top(temp_arena).cast(*u8) - bytes;
+    
+    //
+    
+    arena_print_cstring(output_arena, c_string "(u8 *)\"");
+    
+    c_for i: s64; i < size; i += 1;
+    {
+      arena_print_cstring(output_arena, c_string "\\x");
+      arena_print_u64(output_arena, bytes[i], 16, 2);
+    }
+    
+    arena_print_cstring(output_arena, c_string "\"");
+    
+    //
+    
+    arena_pop_to_pointer(temp_arena, bytes);
+  }
+  else if expr_kind == `node unary size_of`
+  {
+    debug_assert(c_dbgpos, expr.value.is_constexpr);
+    c89_compile_integer_constant(expr.value.as_u64, output_arena);
+  }
+  else if expr_kind == `node unary alignment_of`
+  {
+    debug_assert(c_dbgpos, expr.value.is_constexpr);
+    c89_compile_integer_constant(expr.value.as_u64, output_arena);
+  }
+  else if expr_kind == `node binary index`
+  {
+    debug_assert(c_dbgpos, expr.expr_0 != null);
+    debug_assert(c_dbgpos, expr.expr_1 != null);
+    
+    arena_print_cstring(output_arena, c_string "(");
+    c89_compile_expression_recursively(expr.expr_0, output_arena);
+    arena_print_cstring(output_arena, c_string ")");
+    arena_print_cstring(output_arena, c_string "[");
+    c89_compile_expression_recursively(expr.expr_1, output_arena);
+    arena_print_cstring(output_arena, c_string "]");
+  }
+  else if expr_kind == `node binary cast`
+  {
+    dst_type : *Type; dst_type = expr.value.type;
+    src_type : *Type; src_type = expr.expr_0.value.type;
+    
+    is_fp : u64; is_fp = (src_type.type_kind == TYPE_POINTER_TO and src_type.sub_type.type_kind == TYPE_FUNCTION);
+    if src_type.type_kind == TYPE_FUNCTION or is_fp
+      complain(0, expr.token, c_string "I don't know how to do this in C89 without warnings");
+    
+    arena_print_cstring(output_arena, c_string "(");
+    
+    temp_top : *void; temp_top = arena_get_top(temp_arena);
+    
+    ctype_cstring : *u8;
+    ctype_cstring = declaration_from_type_and_center(dst_type, c_string "", temp_arena);
+    
+    arena_print_cstring(output_arena, ctype_cstring);
+    arena_pop_to_pointer(temp_arena, temp_top);
+    
+    arena_print_cstring(output_arena, c_string ")");
+    
+    arena_print_cstring(output_arena, c_string "(");
+    c89_compile_expression_recursively(expr.expr_0, output_arena);
+    arena_print_cstring(output_arena, c_string ")");
+  }
+  else if expr_kind == `node binary .`
+  {
+    arena_print_cstring(output_arena, c_string "(");
+    c89_compile_expression_recursively(expr.expr_0, output_arena);
+    arena_print_cstring(output_arena, c_string ")");
+    
+    if expr.expr_0.value.type.type_kind == TYPE_POINTER_TO  arena_print_cstring(output_arena, c_string "->");
+    else                                                    arena_print_cstring(output_arena, c_string ".");
+    
+    c_member_name : *u8; c_member_name = expr.value.type.c_name_opt;
+    debug_assert(c_dbgpos, c_member_name != null);
+    arena_print_cstring(output_arena, c_member_name);
+  }
+  else
+  {
+    complain(0, expr.token, c_string "iduno how to compile this");
+  }
+}
+
+c89_compile_block : (block_stmt: *Ast_Node, spaces: s64, output_arena: *Arena) -> void
+{
+  if block_stmt.node_kind == `node statement list`
+  {
+    c89_compile_statement_recursively(block_stmt, spaces, output_arena);
+  }
+  else
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_cstring(output_arena, c_string "{\n");
+    c89_compile_statement_recursively(block_stmt, spaces + 2, output_arena);
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_cstring(output_arena, c_string "}\n");
+  }
+}
+
+
+c89_compile_local_symbol : (symbol: *Symbol, sub_spaces: s64, output_arena: *Arena) -> void
+{
+  debug_assert(c_dbgpos, symbol != null);
+  debug_assert(c_dbgpos, symbol.type != null);
+  debug_assert(c_dbgpos, symbol.storage != STORAGE_C_TYPEDEF);
+  
+  // compile the declaration:
+  arena_print_row(output_arena, sub_spaces, ' ');
+       if symbol.storage == STORAGE_EXTERN  arena_print_cstring(output_arena, c_string "extern ");
+  else if symbol.storage == STORAGE_STATIC  arena_print_cstring(output_arena, c_string "static ");
+  
+  temp_top : *void; temp_top = arena_get_top(temp_arena);
+  center : *u8; center = print_declaration_center_from_symbol(symbol, temp_arena);
+  
+  declaration_cstring : *u8;
+  declaration_cstring = declaration_from_type_and_center(symbol.type, center, temp_arena);
+  
+  arena_print_cstring(output_arena, declaration_cstring);
+  arena_pop_to_pointer(temp_arena, temp_top);
+  
+  if symbol.storage == STORAGE_LOCAL
+  {
+         if symbol.type.type_kind == TYPE_POINTER_TO  arena_print_cstring(output_arena, c_string " = NULL");
+    else if symbol.type.type_kind == TYPE_STRUCT      arena_print_cstring(output_arena, c_string " = {0}");
+    else                                              arena_print_cstring(output_arena, c_string " = 0");
+  }
+  
+  arena_print_cstring(output_arena, c_string ";\n");
+}
+
+c89_compile_statement_recursively : (stmt: *Ast_Node, spaces: s64, output_arena: *Arena) -> void
+{
+  stmt_kind : s64; stmt_kind = stmt.node_kind;
+  
+  if stmt_kind == `node statement root`
+  {
+    scope_holder : *Ast_Node; scope_holder = stmt;
+    
+    num_typedefs: s64;
+    
+    c_for i: s64; i < scope_holder.scope.num_symbols; i += 1;
+    {
+      symbol : *Symbol; symbol = scope_holder.scope.symbols[i];
+      debug_assert(c_dbgpos, symbol != null);
+      debug_assert(c_dbgpos, symbol.type != null);
+      
+      if symbol.storage == STORAGE_C_TYPEDEF
+      {
+        debug_assert(c_dbgpos, symbol.type.type_kind == TYPE_STRUCT);
+        
+        arena_print_row(output_arena, spaces, ' ');
+        arena_print_cstring(output_arena, c_string "typedef struct ");
+        arena_print_cstring(output_arena, symbol.type.struct_c_name);
+        arena_print_cstring(output_arena, c_string " ");
+        arena_print_cstring(output_arena, symbol.type.struct_c_name);
+        arena_print_cstring(output_arena, c_string ";\n");
+        num_typedefs += 1;
+      }
+    }
+    
+    if num_typedefs > 0  arena_print_cstring(output_arena, c_string "\n");
+    
+    //
+    
+    num_structs : s64;
+    
+    c_for i: s64; i < scope_holder.scope.num_symbols; i += 1;
+    {
+      symbol : *Symbol; symbol = scope_holder.scope.symbols[i];
+      debug_assert(c_dbgpos, symbol != null);
+      debug_assert(c_dbgpos, symbol.type != null);
+      
+      if symbol.storage == STORAGE_C_TYPEDEF
+      {
+        debug_assert(c_dbgpos, symbol.type.type_kind == TYPE_STRUCT);
+        
+        arena_print_row(output_arena, spaces, ' ');
+        arena_print_cstring(output_arena, c_string "struct ");
+        arena_print_cstring(output_arena, symbol.type.struct_c_name);
+        arena_print_cstring(output_arena, c_string "\n");
+        
+        arena_print_row(output_arena, spaces, ' ');
+        arena_print_cstring(output_arena, c_string "{\n");
+        
+        sub_spaces : s64; sub_spaces = spaces + 2;
+        
+        c_for member_index: s64; member_index < symbol.type.num_members; member_index += 1;
+        {
+          member_type : *Type; member_type = symbol.type.members[member_index];
+          
+          arena_print_row(output_arena, sub_spaces, ' ');
+          
+          temp_top : *void; temp_top = arena_get_top(temp_arena);
+          
+          debug_assert(c_dbgpos, member_type.c_name_opt != null);
+          declaration_cstring : *u8;
+          declaration_cstring = declaration_from_type_and_center(member_type, member_type.c_name_opt, temp_arena);
+          
+          arena_print_cstring(output_arena, declaration_cstring);
+          arena_pop_to_pointer(temp_arena, temp_top);
+          
+          arena_print_cstring(output_arena, c_string ";\n");
+        }
+        
+        arena_print_row(output_arena, spaces, ' ');
+        arena_print_cstring(output_arena, c_string "};\n");
+        
+        num_structs += 1;
+      }
+    }
+    
+    if num_structs > 0  arena_print_cstring(output_arena, c_string "\n");
+    
+    // declare:
+    
+    c_for i: s64; i < stmt.num_items; i += 1;
+    {
+      node : *Ast_Node; node = stmt.items[i];
+      
+      if node.node_kind == `node binary :`
+      {
+        symbol : *Symbol; symbol = node.expr_0.symbol_by_name;
+        debug_assert(c_dbgpos, symbol != null);
+        debug_assert(c_dbgpos, symbol.type != null);
+        
+        if symbol.storage == STORAGE_C_TYPEDEF  continue;
+        
+        // compile the declaration:
+        
+             if symbol.storage == STORAGE_EXTERN  arena_print_cstring(output_arena, c_string "extern ");
+        else if symbol.storage == STORAGE_STATIC  arena_print_cstring(output_arena, c_string "static ");
+        
+        temp_top : *void; temp_top = arena_get_top(temp_arena);
+        center : *u8; center = print_declaration_center_from_symbol(symbol, temp_arena);
+        arena_print_row(output_arena, spaces, ' ');
+        
+        declaration_cstring : *u8;
+        declaration_cstring = declaration_from_type_and_center(symbol.type, center, temp_arena);
+        arena_print_cstring(output_arena, declaration_cstring);
+        
+        arena_pop_to_pointer(temp_arena, temp_top);
+        
+        arena_print_cstring(output_arena, c_string ";\n");
+      }
+    }
+    
+    arena_print_cstring(output_arena, c_string "\n");
+    
+    // compile all the children:
+    
+    c_for i: s64; i < stmt.num_items; i += 1;
+      c89_compile_statement_recursively(stmt.items[i], spaces, output_arena);
+  }
+  else if stmt_kind == `node binary :`
+      and stmt.expr_1.node_kind == `node function type`
+      and stmt.stmt_0 != null
+  {
+    arena_print_cstring(output_arena, c_string "\n");
+    arena_print_row(output_arena, spaces, ' ');
+  
+    symbol : *Symbol; symbol = stmt.expr_0.symbol_by_name;
+    
+    temp_top : *void; temp_top = arena_get_top(temp_arena);
+    center : *u8; center = print_declaration_center_from_symbol(symbol, temp_arena);
+    
+    declaration_cstring : *u8;
+    declaration_cstring = declaration_from_type_and_center(symbol.type, center, temp_arena);
+    
+    arena_print_cstring(output_arena, declaration_cstring);
+    arena_pop_to_pointer(temp_arena, temp_top);
+    
+    arena_print_cstring(output_arena, c_string "\n");
+    c89_compile_statement_recursively(stmt.stmt_0, spaces, output_arena);
+  }
+  else if stmt_kind == `node statement list`
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_cstring(output_arena, c_string "{\n");
+    
+    sub_spaces : s64; sub_spaces = spaces + 2;
+    
+    // declare:
+    num_decls : s64;
+    
+    c_for i: s64; i < stmt.num_items; i += 1;
+    {
+      sub_node : *Ast_Node; sub_node = stmt.items[i];
+      
+      if sub_node.node_kind == `node binary :`
+      {
+        c89_compile_local_symbol(sub_node.expr_0.symbol_by_name, sub_spaces, output_arena);
+        num_decls += 1;
+      }
+    }
+    
+    if num_decls > 0  arena_print_cstring(output_arena, c_string "\n");
+    
+    num_voided : s64;
+    
+    scope_holder : *Ast_Node; scope_holder = stmt;
+    
+    c_for i: s64; i < scope_holder.scope.num_symbols; i += 1;
+    {
+      symbol : *Symbol; symbol = scope_holder.scope.symbols[i];
+      
+      if symbol.num_uses == 0
+      {
+        arena_print_row(output_arena, sub_spaces, ' ');
+        arena_print_cstring(output_arena, c_string "(void) ");
+        arena_print_cstring(output_arena, symbol.c_name_string);
+        arena_print_cstring(output_arena, c_string ";\n");
+        num_voided += 1;
+      }
+    }
+    
+    if num_voided > 0  arena_print_cstring(output_arena, c_string "\n");
+    
+    // compile all the children:
+    c_for i: s64; i < stmt.num_items; i += 1;
+      c89_compile_statement_recursively(stmt.items[i], sub_spaces, output_arena);
+    
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_cstring(output_arena, c_string "}\n");
+  }
+  else if stmt_kind == `node statement while`
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_cstring(output_arena, c_string "while (");
+    c89_compile_expression_recursively(stmt.expr_0, output_arena);
+    arena_print_cstring(output_arena, c_string ")\n");
+    
+    c89_compile_block(stmt.stmt_0, spaces, output_arena);
+  }
+  else if stmt_kind == `node statement do-while`
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_cstring(output_arena, c_string "do\n");
+    c89_compile_block(stmt.stmt_0, spaces, output_arena);
+  
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_cstring(output_arena, c_string "while (");
+    c89_compile_expression_recursively(stmt.expr_0, output_arena);
+    arena_print_cstring(output_arena, c_string ");\n");
+  }
+  else if stmt_kind == `node statement if-else`
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_cstring(output_arena, c_string "if (");
+    c89_compile_expression_recursively(stmt.expr_0, output_arena);
+    arena_print_cstring(output_arena, c_string ")\n");
+    
+    c89_compile_block(stmt.stmt_0, spaces, output_arena);
+    
+    next_else : *Ast_Node; next_else = stmt.stmt_1;
+    
+    while next_else != null and next_else.node_kind == `node statement if-else`
+    {
+      arena_print_row(output_arena, spaces, ' ');
+      arena_print_cstring(output_arena, c_string "else if (");
+      c89_compile_expression_recursively(next_else.expr_0, output_arena);
+      arena_print_cstring(output_arena, c_string ")\n");
+      
+      c89_compile_block(next_else.stmt_0, spaces, output_arena);
+      
+      next_else = next_else.stmt_1;
+    }
+    
+    if next_else != null
+    {
+      arena_print_row(output_arena, spaces, ' ');
+      arena_print_cstring(output_arena, c_string "else\n");
+      c89_compile_block(next_else, spaces, output_arena);
+    }
+  }
+  else if stmt_kind == `node statement c_for`
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_cstring(output_arena, c_string "{\n");
+    
+    sub_spaces : s64; sub_spaces = spaces + 2;
+    
+    if stmt.expr_0
+    {
+      debug_assert(c_dbgpos, stmt.expr_0.node_kind == `node binary :`);
+      
+      symbol : *Symbol; symbol = stmt.expr_0.expr_0.symbol_by_name;
+      debug_assert(c_dbgpos, symbol != null);
+      
+      c89_compile_local_symbol(symbol, sub_spaces, output_arena);
+      
+      if symbol.num_uses == 0
+      {
+        arena_print_row(output_arena, sub_spaces, ' ');
+        arena_print_cstring(output_arena, c_string "(void) ");
+        arena_print_cstring(output_arena, symbol.c_name_string);
+        arena_print_cstring(output_arena, c_string ";\n");
+      }
+    }
+    
+    arena_print_row(output_arena, sub_spaces, ' ');
+    arena_print_cstring(output_arena, c_string "for (;");
+    
+    if stmt.expr_1
+    {
+      arena_print_cstring(output_arena, c_string " ");
+      c89_compile_expression_recursively(stmt.expr_1, output_arena);
+    }
+    
+    arena_print_cstring(output_arena, c_string ";");
+    
+    if stmt.expr_2
+    {
+      arena_print_cstring(output_arena, c_string " ");
+      c89_compile_expression_recursively(stmt.expr_2, output_arena);
+    }
+    
+    arena_print_cstring(output_arena, c_string ")\n");
+    
+    c89_compile_block(stmt.stmt_0, sub_spaces, output_arena);
+    
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_cstring(output_arena, c_string "}\n");
+  }
+  else if stmt_kind == `node binary :`
+  {
+    // do nothing?
+  }
+  else if stmt_kind == `node c_enum`
+  {
+    // do nothing.
+  }
+  else if stmt_kind == `node statement break`
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_cstring(output_arena, c_string "break;\n");
+  }
+  else if stmt_kind == `node statement continue`
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_cstring(output_arena, c_string "continue;\n");
+  }
+  else if stmt_kind == `node statement return`
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_cstring(output_arena, c_string "return");
+    
+    if stmt.expr_0
+    {
+      arena_print_cstring(output_arena, c_string " ");
+      c89_compile_expression_recursively(stmt.expr_0, output_arena);
+    }
+    
+    arena_print_cstring(output_arena, c_string ";\n");
+  }
+  else
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    c89_compile_expression_recursively(stmt, output_arena);
+    arena_print_cstring(output_arena, c_string ";\n");
+  }
+}
+
+language_frontend : (input_path: *u8) -> *Ast_Node
+{
+  // read the input file:
+  input_text : *u8;
+  {
+    input_text = file_read_all_bytes(input_path, keep_arena);
+    error_assert(c_dbgpos, input_text != null);
+    arena_push(keep_arena, 1);
+  }
+  
+  // print the input file
+  if 0
+  {
+    console_error_print_cstring(c_string "  FILE:\n");
+    console_error_print_cstring(input_text);
+    console_error_print_cstring(c_string "\n");
+  }
+  
+  // read all tokens:
+  
+  input_tokens : *Token;
+  num_input_tokens : s64;
+  {
+    arena_push_aligner(keep_arena, alignment_of(Token));
+    input_tokens = arena_get_top(keep_arena);
+    
+    cp : *u8; cp = input_text;
+    
+    c_for ;;;
+    {
+      // skip spaces and comments
+      c_for ;;;
+      {
+        while ascii_is_space(cp.*)  cp += 1;
+        
+        if cp[0] == '/' and cp[1] == '/'
+        {
+          while cp.* != '\0' and cp.* != '\n'
+            cp += 1;
+        }
+        else
+        {
+          break;
+        }
+      }
+      
+      //
+      token_beg  : *u8; token_beg = cp;
+      token_kind : s64;
+      
+      if cp.* == '\0'
+      {
+        break;
+      }
+      else if ascii_is_decimal_digit(cp.*)
+      {
+        token_kind = `token integer`;
+        cp += 1;
+        
+        while ascii_is_letter_or_digit(cp.*) or cp.* == '_'
+          cp += 1;
+      }
+      else if ascii_is_letter(cp.*) or cp.* == '_'
+      {
+        token_kind = `token name`;
+        cp += 1;
+        
+        while ascii_is_letter_or_digit(cp.*) or cp.* == '_'
+          cp += 1;
+        
+        size : s64; size = cp - token_beg;
+        
+        if size == 2
+        {
+               if memory_equal(token_beg, c_string "u8", size)  token_kind = `token u8`;
+          else if memory_equal(token_beg, c_string "s8", size)  token_kind = `token s8`;
+          else if memory_equal(token_beg, c_string "or", size)  token_kind = `token or`;
+          else if memory_equal(token_beg, c_string "if", size)  token_kind = `token if`;
+          else if memory_equal(token_beg, c_string "do", size)  token_kind = `token do`;
+        }
+        else if size == 3
+        {
+               if memory_equal(token_beg, c_string "u64", size)  token_kind = `token u64`;
+          else if memory_equal(token_beg, c_string "u32", size)  token_kind = `token u32`;
+          else if memory_equal(token_beg, c_string "u16", size)  token_kind = `token u16`;
+          else if memory_equal(token_beg, c_string "s64", size)  token_kind = `token s64`;
+          else if memory_equal(token_beg, c_string "s32", size)  token_kind = `token s32`;
+          else if memory_equal(token_beg, c_string "s16", size)  token_kind = `token s16`;
+          else if memory_equal(token_beg, c_string "f64", size)  token_kind = `token f64`;
+          else if memory_equal(token_beg, c_string "f32", size)  token_kind = `token f32`;
+          else if memory_equal(token_beg, c_string "and", size)  token_kind = `token and`;
+          else if memory_equal(token_beg, c_string "not", size)  token_kind = `token not`;
+        }
+        else if size == 4
+        {
+               if memory_equal(token_beg, c_string "void", size)  token_kind = `token void`;
+          else if memory_equal(token_beg, c_string "null", size)  token_kind = `token null`;
+          else if memory_equal(token_beg, c_string "else", size)  token_kind = `token else`;
+          else if memory_equal(token_beg, c_string "enum", size)  token_kind = `token enum`;
+          else if memory_equal(token_beg, c_string "cast", size)  token_kind = `token cast`;
+        }
+        else if size == 5
+        {
+               if memory_equal(token_beg, c_string "while", size)  token_kind = `token while`;
+          else if memory_equal(token_beg, c_string "break", size)  token_kind = `token break`;
+          else if memory_equal(token_beg, c_string "unoin", size)  token_kind = `token unoin`;
+          else if memory_equal(token_beg, c_string "c_for", size)  token_kind = `token c_for`;
+        }
+        else if size == 6
+        {
+                if memory_equal(token_beg, c_string "return", size)  token_kind = `token return`;
+           else if memory_equal(token_beg, c_string "c_name", size)  token_kind = `token c_name`;
+           else if memory_equal(token_beg, c_string "struct", size)  token_kind = `token struct`;
+           else if memory_equal(token_beg, c_string "c_load", size)  token_kind = `token c_load`;
+           else if memory_equal(token_beg, c_string "c_enum", size)  token_kind = `token c_enum`;
+        }
+        else if size == 7
+        {
+               if memory_equal(token_beg, c_string "size_of", size)  token_kind = `token size_of`;
+          else if memory_equal(token_beg, c_string "type_of", size)  token_kind = `token type_of`;
+        }
+        else if size == 8
+        {
+               if memory_equal(token_beg, c_string "c_extern", size)  token_kind = `token c_extern`;
+          else if memory_equal(token_beg, c_string "c_string", size)  token_kind = `token c_string`;
+          else if memory_equal(token_beg, c_string "continue", size)  token_kind = `token continue`;
+          else if memory_equal(token_beg, c_string "c_dbgpos", size)  token_kind = `token c_dbgpos`;
+        }
+        else if size == 9
+        {
+          if memory_equal(token_beg, c_string "c_typedef", size)  token_kind = `token c_typedef`;
+        }
+        else if size == 12
+        {
+          if memory_equal(token_beg, c_string"alignment_of", size)  token_kind = `token alignment_of`;
+        }
+      }
+      else if cp.* == '"' or cp.* == '\'' or cp.* == '`'
+      {
+             if cp.* == '"'   token_kind = `token string`;
+        else if cp.* == '\''  token_kind = `token character`;
+        else if cp.* == '`'   token_kind = `token name`;
+        
+        end_quote : u64; end_quote = cp.*;
+        cp += 1;
+        
+        num_backslashes : s64;
+        
+        while not(cp.* == end_quote and num_backslashes % 2 == 0)
+        {
+          error_assert(c_dbgpos, cp.* != '\0');
+          error_assert(c_dbgpos, cp.* != '\n');
+          
+          num_backslashes = 0; // TODO: put it inside the c_for's init
+          c_for ; cp.* == '\\'; num_backslashes += 1;
+            cp += 1;
+          
+          if num_backslashes == 0  cp += 1;
+        }
+        
+        cp += 1;
+      }
+      else
+      {
+        c0 : u64; c0 = cp[0];
+        c1 : u64; c1 = cp[1];
+        c2 : u64; c2 = cp[2];
+        
+        size : s64;
+        
+             if c0 == '<' and c1 == '<' and c2 == '='  { size = 3; token_kind = `token <<=`; }
+        else if c0 == '>' and c1 == '>' and c2 == '='  { size = 3; token_kind = `token >>=`; }
+        else if c0 == '+' and c1 == '='  { size = 2; token_kind = `token +=`; }
+        else if c0 == '-' and c1 == '='  { size = 2; token_kind = `token -=`; }
+        else if c0 == '*' and c1 == '='  { size = 2; token_kind = `token *=`; }
+        else if c0 == '/' and c1 == '='  { size = 2; token_kind = `token /=`; }
+        else if c0 == '%' and c1 == '='  { size = 2; token_kind = `token %=`; }
+        else if c0 == '&' and c1 == '='  { size = 2; token_kind = `token &=`; }
+        else if c0 == '^' and c1 == '='  { size = 2; token_kind = `token ^=`; }
+        else if c0 == '|' and c1 == '='  { size = 2; token_kind = `token |=`; }
+        else if c0 == '<' and c1 == '='  { size = 2; token_kind = `token <=`; }
+        else if c0 == '>' and c1 == '='  { size = 2; token_kind = `token >=`; }
+        else if c0 == '=' and c1 == '='  { size = 2; token_kind = `token ==`; }
+        else if c0 == '!' and c1 == '='  { size = 2; token_kind = `token !=`; }
+        else if c0 == '<' and c1 == '<'  { size = 2; token_kind = `token <<`; }
+        else if c0 == '>' and c1 == '>'  { size = 2; token_kind = `token >>`; }
+        else if c0 == '-' and c1 == '>'  { size = 2; token_kind = `token ->`; }
+        else if c0 == '.' and c1 == '*'  { size = 2; token_kind = `token .*`; }
+        else if c0 == '.' and c1 == '&'  { size = 2; token_kind = `token .&`; }
+        else if c0 == '+'  { size = 1; token_kind = `token +`; }
+        else if c0 == '-'  { size = 1; token_kind = `token -`; }
+        else if c0 == '*'  { size = 1; token_kind = `token *`; }
+        else if c0 == '/'  { size = 1; token_kind = `token /`; }
+        else if c0 == '%'  { size = 1; token_kind = `token %`; }
+        else if c0 == '&'  { size = 1; token_kind = `token &`; }
+        else if c0 == '^'  { size = 1; token_kind = `token ^`; }
+        else if c0 == '|'  { size = 1; token_kind = `token |`; }
+        else if c0 == '<'  { size = 1; token_kind = `token <`; }
+        else if c0 == '>'  { size = 1; token_kind = `token >`; }
+        else if c0 == '='  { size = 1; token_kind = `token =`; }
+        else if c0 == ';'  { size = 1; token_kind = `token ;`; }
+        else if c0 == '.'  { size = 1; token_kind = `token .`; }
+        else if c0 == ':'  { size = 1; token_kind = `token :`; }
+        else if c0 == ','  { size = 1; token_kind = `token ,`; }
+        else if c0 == '('  { size = 1; token_kind = `token (`; }
+        else if c0 == ')'  { size = 1; token_kind = `token )`; }
+        else if c0 == '{'  { size = 1; token_kind = `token {`; }
+        else if c0 == '}'  { size = 1; token_kind = `token }`; }
+        else if c0 == '['  { size = 1; token_kind = `token [`; }
+        else if c0 == ']'  { size = 1; token_kind = `token ]`; }
+        
+        error_assert(c_dbgpos, size != 0);
+        cp += size;
+      }
+      
+      debug_assert(c_dbgpos, token_kind != 0);
+      
+      token : *Token; token = arena_push(keep_arena, size_of(Token));
+      
+      token.at = token_beg;
+      token.size = cp - token_beg;
+      token.token_kind = token_kind;
+      token.file = input_text;
+      
+      num_input_tokens += 1;
+    }
+  }
+  
+  // print all tokens:
+  if 0
+  {
+    console_error_print_cstring(c_string "  TOKENS:\n");
+    
+    line_length : s64;
+    
+    c_for i : s64; i < num_input_tokens; i += 1;
+    {
+      ith_token : *Token; ith_token = input_tokens + i;
+      size : s64; size = 1 + ith_token.size + 3;
+      
+      if line_length + size > 100
+      {
+        console_error_print_cstring(c_string "\n");
+        line_length = 0;
+      }
+      
+      console_error_print_cstring(c_string "'");
+      console_error_print_bytes(ith_token.size, ith_token.at);
+      console_error_print_cstring(c_string "'  ");
+      
+      line_length += size;
+    }
+    
+    console_error_print_cstring(c_string "\n\n");
+  }
+  
+  // parse the input and construct the AST
+  root : *Ast_Node;
+  {
+    _parser : Parser;
+    parser : *Parser; parser = _parser.&;
+    
+    parser.tokens = input_tokens;
+    parser.num_tokens = num_input_tokens;
+    error_assert(c_dbgpos, input_text[0] != '\0');
+    
+    arena_push_aligner(keep_arena, alignment_of(Token));
+    
+    parser.before_first = arena_push(keep_arena, size_of(Token));
+    parser.before_first.file = input_text;
+    parser.before_first.at   = input_text;
+    parser.before_first.token_kind = `token invalid`;
+    parser.before_first.size = 0;
+    
+    parser.after_last = arena_push(keep_arena, size_of(Token));
+    parser.after_last.file = input_text;
+    parser.after_last.at   = input_text;
+    parser.after_last.token_kind = `token invalid`;
+    parser.after_last.size = 0;
+    
+    while parser.after_last.at[1] != '\0'
+      parser.after_last.at += 1;
+    
+    // complain on every token:
+    if 0
+    {
+      console_error_print_cstring(c_string "  COMPLAINS:\n");
+      
+      c_for i: s64; i < parser.num_tokens + 2; i += 1;
+        complain(COMPLAIN_NOTE, parser_safe_at(parser, i - 1), c_string "this");
+      
+      console_error_print_cstring(c_string "\n");
+    }
+    
+    root = ast_create_node(`node statement root`, parser.before_first);
+    
+    items_base : *void; items_base = arena_get_top(temp_arena);
+    
+    while parser_tokens_left(parser) > 0
+    {
+      if parser_accept(parser, `token c_enum`)
+      {
+        c_enum_token : *Token; c_enum_token = parser_at(parser, -1);
+        
+        if not parser_inspect(parser, `token {`)
+          complain(0, parser_safe_at(parser, 0), c_string "expected the openning curly brace '{' after c_enum");
+        
+        global : *Ast_Node; global = parse_statement(parser);
+        global.node_kind = `node c_enum`;
+        global.token = c_enum_token;
+        
+        c_for i: s64; i < global.num_items; i += 1;
+        {
+          node : *Ast_Node; node = global.items[i];
+          
+          if node.node_kind != `node primary name`  complain(0, node.token, c_string "not a name in the c_enum");
+          
+          arena_push_aligner(keep_arena, alignment_of(Symbol));
+          symbol : *Symbol; symbol = arena_push(keep_arena, size_of(Symbol));
+          symbol.token = node.token;
+          symbol.ast_node_as_void_ptr = node;
+          
+          g_next_address += 1;
+          symbol.c_name_string = arena_get_top(keep_arena);
+          arena_print_address(keep_arena, g_next_address);
+          arena_push(keep_arena, 1);
+          
+          node.symbol_by_name = symbol;
+        }
+        
+        arena_push_copy(temp_arena, size_of(*Ast_Node), global.&);
+        root.num_items += 1;
+      }
+      else
+      {
+        global : *Ast_Node; global = parse_expression(parser, 0);
+        
+        if global.node_kind == `node binary :`
+           and global.expr_1.node_kind == `node function type`
+           and parser_inspect(parser, `token {`)
+        {
+          global.stmt_0 = parse_statement(parser);
+        }
+        else
+        {
+          parser_expect(parser, `token ;`, c_string "the semicolon ';' after the global declartion");
+        }
+        
+        arena_push_copy(temp_arena, size_of(*Ast_Node), global.&);
+        root.num_items += 1;
+      }
+    }
+    
+    arena_push_aligner(keep_arena, alignment_of(*Ast_Node));
+    root.items = arena_push_copy(keep_arena, root.num_items * size_of(*Ast_Node), items_base);
+    arena_pop_to_pointer(temp_arena, items_base);
+  }
+  
+  // print the entire AST
+  if 0  ast_debug_print_to_console_error(root);
+  
+  // compute all scopes
+  scope_define_recursively(root, null);
+  
+  // print the entire AST with scopes
+  if 0  ast_debug_print_to_console_error(root);
+  
+  fe_compile_statement_recursively(root, null, null);
+  
+  // print the precompiled AST
+  if 0  ast_debug_print_to_console_error(root);
+  
+  return root;
+}
+
+type_equal : (a: *Type, b: *Type) -> u64
+{
+  debug_assert(c_dbgpos, a != null);
+  debug_assert(c_dbgpos, b != null);
+  
+  if a == b  return 1;
+  
+  if a.type_kind != b.type_kind  return 0;
+  
+  the_kind : s64; the_kind = a.type_kind;
+  
+  if type_kind_is_integer(the_kind) or the_kind == TYPE_VOID  return 1;
+  
+  if the_kind == TYPE_POINTER_TO  return type_equal(a.sub_type, b.sub_type);
+  
+  if the_kind == TYPE_STRUCT  return a.struct_c_name == b.struct_c_name; // NOTE: it IS correct
+  
+  if the_kind == TYPE_FUNCTION
+  {
+    if not type_equal(a.sub_type, b.sub_type)  return 0;
+    
+    if a.num_params != b.num_params  return 0;
+    
+    c_for i: s64; i < a.num_params; i += 1;
+      if not type_equal(a.params[i], b.params[i])
+        return 0;
+    
+    return 1;
+  }
+  
+  debug_assert(c_dbgpos, 0);
+  return 0;
+}
+
+type_kind_is_integer : (type_kind: s64) -> u64
+{
+  return type_kind == TYPE_U64 or type_kind == TYPE_S64
+      or type_kind == TYPE_U32 or type_kind == TYPE_S32
+      or type_kind == TYPE_U16 or type_kind == TYPE_S16
+      or type_kind == TYPE_U8  or type_kind == TYPE_S8;
+}
+
+type_implicit_cast_is_possible : (dst: *Type, src: *Type) -> u64
+{
+  debug_assert(c_dbgpos, dst != null);
+  debug_assert(c_dbgpos, src != null);
+  
+  if dst == src  return 1; // general truth
+  
+  if type_kind_is_integer(dst.type_kind) and type_kind_is_integer(src.type_kind)  return 1;
+  
+  if dst.type_kind != src.type_kind  return 0;
+  
+  the_kind : s64; the_kind = dst.type_kind;
+  
+  if the_kind == TYPE_VOID    return 1;
+  if the_kind == TYPE_STRUCT  return dst == src;
+  
+  if the_kind == TYPE_POINTER_TO
+  {
+    if src.sub_type.type_kind == TYPE_VOID or dst.sub_type.type_kind == TYPE_VOID  return 1;
+    
+    return type_equal(src.sub_type, dst.sub_type);
+  }
+  
+  if dst.token complain(0, dst.token, c_string "can't check if type_implicit_cast_is_possible");
+  if src.token complain(0, src.token, c_string "can't check if type_implicit_cast_is_possible");
+  debug_assert(c_dbgpos, 0);
+  return 0;
+}
+
+rvalue_from : (value: Expr_Value) -> Expr_Value
+{
+  value.is_lvalue = 0;
+  return value;
+}
+
+type_kind_can_be_boolified : (type_kind: s64) -> u64
+{
+  if type_kind == TYPE_STRUCT  return 0;
+  
+  return 1;
+}
+
+fe_compile_expression_recursively : (expr: *Ast_Node, current_scope: *Scope) -> Expr_Value
+{
+  debug_assert(c_dbgpos, expr != null);
+  debug_assert(c_dbgpos, current_scope != null);
+
+  result : Expr_Value;
+  expr_kind : s64; expr_kind = expr.node_kind;
+  
+  if expr_kind == `node primary name`
+  {
+    symbol : *Symbol; symbol = expr.symbol_by_name;
+    
+    if symbol == null
+    {
+      symbol = scope_find_symbol_by_name(current_scope, expr.token.size, expr.token.at);
+      
+      if symbol == null  complain(0, expr.token, c_string "no such symbol");
+      
+      expr.symbol_by_name = symbol;
+    }
+    
+    if symbol.storage == STORAGE_LOCAL and not symbol.local_is_active
+    {
+      complain(COMPLAIN_ERROR, expr.token, c_string "using a local variable before it's declared");
+      complain(COMPLAIN_NOTE, symbol.token, c_string "the declaration is here");
+      process_exit(1);
+    }
+    
+    if symbol.type == null and expr.token  complain(0, expr.token, c_string "symbol.type == null");
+    debug_assert(c_dbgpos, symbol.type != null);
+    
+    result.type = symbol.type;
+    result.token = expr.token;
+    symbol.num_uses += 1; // TODO: count reads and writes separately
+    
+    if symbol.storage != STORAGE_C_ENUM
+    {
+      result.is_lvalue = (symbol.type.type_kind != TYPE_FUNCTION);
+    }
+    else
+    {
+      result.is_constexpr = 1;
+      result.as_u64 = symbol.c_enum_value;
+    }
+  }
+  else if expr_kind == `node function call`
+  {
+    function_value : Expr_Value;
+    function_value = rvalue_from(fe_compile_expression_recursively(expr.expr_0, current_scope));
+    
+    function_type : *Type; function_type = function_value.type;
+    
+    if function_type.type_kind == TYPE_POINTER_TO
+      function_type = function_type.sub_type;
+    
+    if function_type.type_kind != TYPE_FUNCTION
+      complain(0, function_value.token, c_string "not a function");
+    
+    if expr.num_items < function_type.num_params  complain(0, expr.token, c_string "not enough arguments");
+    if expr.num_items > function_type.num_params  complain(0, expr.token, c_string "too many arguments");
+    
+    c_for i: s64; i < expr.num_items; i += 1;
+    {
+      arg : *Ast_Node; arg = expr.items[i];
+      arg_value : Expr_Value; arg_value = rvalue_from(fe_compile_expression_recursively(arg, current_scope));
+      param_type : *Type; param_type = function_type.params[i];
+      
+      if not type_implicit_cast_is_possible(param_type, arg_value.type)
+        complain(0, arg_value.token, c_string "the argument type doesn't match the parameter type");
+    }
+    
+    result.type = function_type.sub_type;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node primary null`
+  {
+    result.type = g_type_void_ptr.&;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node primary c_string`
+  {
+    result.type = g_type_u8_ptr.&;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node primary integer`
+  {
+    value : u64;
+    base : u64; base = 10;
+    
+    size : s64; size = expr.token.size;
+    text : *u8; text = expr.token.at;
+    
+    if size > 2 and text[0] == '0'
+    {
+           if text[1] == 'x'   { text += 2; size -= 2; base = 16; }
+      else if text[1] == 'b'   { text += 2; size -= 2; base = 2 ; }
+      else if text[1] == 'o'   { text += 2; size -= 2; base = 8 ; }
+      else if text[1] == 'd'   { text += 2; size -= 2; base = 10; }
+    }
+
+    c_for i: s64; i < size; i += 1;
+    {
+      ascii_digit : u64; ascii_digit = text[i];
+      
+      if ascii_digit != '_'
+      {
+        digit_int : u64; digit_int = ascii_digit_to_int(ascii_digit);
+        
+        if digit_int >= base  complain(0, expr.token, c_string "bad integer constant");
+        
+        value *= base;
+        value += digit_int;
+      }
+    }
+
+    result.type = g_type_u64.&;
+    result.token = expr.token;
+    result.is_constexpr = 1;
+    result.as_u64 = value;
+  }
+  else if expr_kind == `node primary character`
+  {
+    result.type = g_type_u64.&;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node unary size_of`
+  {
+    result.type = g_type_s64.&;
+    result.token = expr.token;
+    result.is_constexpr = 1;
+    result.as_u64 = type_size_of(type_from_ast(expr.expr_0, current_scope));
+  }
+  else if expr_kind == `node unary alignment_of`
+  {
+    result.type = g_type_s64.&;
+    result.token = expr.token;
+    result.is_constexpr = 1;
+    result.as_u64 = type_alignment_of(type_from_ast(expr.expr_0, current_scope));
+  }
+  else if expr_kind == `node primary c_dbgpos`
+  {
+    result.type = g_type_u8_ptr.&;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node binary =`
+  {
+    lhsv : Expr_Value; lhsv = fe_compile_expression_recursively(expr.expr_0, current_scope);
+    rhsv : Expr_Value; rhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_1, current_scope));
+    
+    if not lhsv.is_lvalue
+      complain(0, expr.token, c_string "need an lvalue on the left of the assignment operator");
+    
+    if not type_implicit_cast_is_possible(lhsv.type, rhsv.type)
+      complain(0, rhsv.token, c_string "the value can't be implicitly cast to the type on the left of the assignment");
+    
+    result.type = lhsv.type;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node binary *`   or expr_kind == `node binary /`   or expr_kind == `node binary %`
+       or expr_kind == `node binary |`   or expr_kind == `node binary &`   or expr_kind == `node binary ^`
+       or expr_kind == `node binary <<`  or expr_kind == `node binary >>`
+       or expr_kind == `node binary *=`  or expr_kind == `node binary /=`  or expr_kind == `node binary %=`
+       or expr_kind == `node binary |=`  or expr_kind == `node binary &=`  or expr_kind == `node binary ^=`
+       or expr_kind == `node binary <<=` or expr_kind == `node binary >>=`
+  {
+    is_assign : u64;
+    
+    is_assign = (expr_kind == `node binary *=`  or expr_kind == `node binary /=`  or expr_kind == `node binary %=`
+              or expr_kind == `node binary |=`  or expr_kind == `node binary &=`  or expr_kind == `node binary ^=`
+              or expr_kind == `node binary <<=` or expr_kind == `node binary >>=`);
+  
+    lhsv : Expr_Value; lhsv = fe_compile_expression_recursively(expr.expr_0, current_scope);
+    
+    if not is_assign  lhsv = rvalue_from(lhsv);
+    
+    rhsv : Expr_Value; rhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_1, current_scope));
+    
+    if is_assign and not lhsv.is_lvalue
+      complain(0, expr.token, c_string "need an lvalue on the left of the assignment operator");
+    
+    if not type_kind_is_integer(lhsv.type.type_kind) or not type_kind_is_integer(rhsv.type.type_kind)
+      complain(0, expr.token, c_string "integers only, please");
+    
+    if expr_kind == `node binary <<` or expr_kind == `node binary >>` or is_assign
+    {
+      result.type = lhsv.type;
+      result.token = expr.token;
+    }
+    else
+    {
+      lsize : s64; lsize = type_size_of(lhsv.type);
+      rsize : s64; rsize = type_size_of(rhsv.type);
+      
+      if lsize > rsize  result.type = lhsv.type;
+      else              result.type = rhsv.type;
+      
+      result.token = expr.token;
+    }
+  }
+  else if expr_kind == `node binary ==` or expr_kind == `node binary !=`
+       or expr_kind == `node binary <=` or expr_kind == `node binary >=`
+       or expr_kind == `node binary <`  or expr_kind == `node binary >`
+  {
+    lhsv : Expr_Value; lhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_0, current_scope));
+    rhsv : Expr_Value; rhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_1, current_scope));
+    
+    // TODO: disallow structs
+    if not type_implicit_cast_is_possible(lhsv.type, rhsv.type)
+      complain(0, expr.token, c_string "the values can't be implicitly cast for a valid comparasion");
+    
+    result.type = g_type_u32.&; // TODO: use u64 as the bool type
+    result.token = expr.token;
+  }
+  else if expr_kind == `node binary or` or expr_kind == `node binary and`
+  {
+    lhsv : Expr_Value; lhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_0, current_scope));
+    rhsv : Expr_Value; rhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_1, current_scope));
+    
+    if not type_kind_can_be_boolified(lhsv.type.type_kind)  complain(0, lhsv.token, c_string "impossible to boolify");
+    if not type_kind_can_be_boolified(rhsv.type.type_kind)  complain(0, rhsv.token, c_string "impossible to boolify");
+    
+    result.type = g_type_u64.&;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node unary not`
+  {
+    subv : Expr_Value; subv = rvalue_from(fe_compile_expression_recursively(expr.expr_0, current_scope));
+    
+    if not type_kind_can_be_boolified(subv.type.type_kind)  complain(0, subv.token, c_string "impossible to boolify");
+    
+    result.type = g_type_u64.&;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node unary +` or expr_kind == `node unary -` or expr_kind == `node unary ^`
+  {
+    subv : Expr_Value; subv = rvalue_from(fe_compile_expression_recursively(expr.expr_0, current_scope));
+    
+    if not type_kind_is_integer(subv.type.type_kind)
+      complain(0, expr.token, c_string "integers only, please");
+    
+    result.type = subv.type;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node unary .*`
+  {
+    subv : Expr_Value; subv = rvalue_from(fe_compile_expression_recursively(expr.expr_0, current_scope));
+    
+    if subv.type.type_kind != TYPE_POINTER_TO
+      complain(0, subv.token, c_string "need a pointer to get the value by pointer");
+    
+    result.type = subv.type.sub_type;
+    result.is_lvalue = 1;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node unary .&`
+  {
+    subv : Expr_Value; subv = fe_compile_expression_recursively(expr.expr_0, current_scope);
+    
+    if not subv.is_lvalue  complain(0, subv.token, c_string "need an lvalue to take the pointer");
+    
+    arena_push_aligner(keep_arena, alignment_of(Type));
+    ptr_to_lvalue_type : *Type;
+    ptr_to_lvalue_type = arena_push(keep_arena, size_of(Type));
+    
+    ptr_to_lvalue_type.type_kind = TYPE_POINTER_TO;
+    ptr_to_lvalue_type.token = expr.token;
+    ptr_to_lvalue_type.sub_type = subv.type;
+    
+    result.type = ptr_to_lvalue_type;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node binary index`
+  {
+    lhsv : Expr_Value; lhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_0, current_scope));
+    rhsv : Expr_Value; rhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_1, current_scope));
+    
+    if lhsv.type.type_kind != TYPE_POINTER_TO
+      complain(0, lhsv.token, c_string "need a pointer to get the value at the index");
+    
+    if not type_kind_is_integer(rhsv.type.type_kind)
+      complain(0, rhsv.token, c_string "the index must be of an integer type");
+    
+    result.type = lhsv.type.sub_type;
+    result.is_lvalue = 1;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node binary cast`
+  {
+    subv : Expr_Value; subv = rvalue_from(fe_compile_expression_recursively(expr.expr_0, current_scope));
+    type : *Type; type = type_from_ast(expr.expr_1, current_scope);
+    
+    if not type_explicit_cast_is_possible(type, subv.type)
+      complain(0, expr.token, c_string "impossible cast, sorry");
+    
+    result.type = type;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node binary .`
+  {
+    lvalue_struct_or_rvalue_ptr_to_struct : Expr_Value;
+    lvalue_struct_or_rvalue_ptr_to_struct = fe_compile_expression_recursively(expr.expr_0, current_scope);
+    
+    struct_type : *Type;
+    
+    if lvalue_struct_or_rvalue_ptr_to_struct.type.type_kind == TYPE_STRUCT
+    {
+      struct_type = lvalue_struct_or_rvalue_ptr_to_struct.type;
+      
+      if not lvalue_struct_or_rvalue_ptr_to_struct.is_lvalue
+        complain(0, expr.token, c_string "the struct is NOT an lvalue");
+    }
+    else if lvalue_struct_or_rvalue_ptr_to_struct.type.type_kind == TYPE_POINTER_TO
+    {
+      struct_type = lvalue_struct_or_rvalue_ptr_to_struct.type.sub_type;
+      
+      if struct_type.type_kind != TYPE_STRUCT
+        complain(0, expr.token, c_string "not a pointer to struct");
+    }
+    else
+    {
+      complain(0, expr.token, c_string "not a struct and not a pointer to struct");
+    }
+    
+    debug_assert(c_dbgpos, struct_type != null);
+    debug_assert(c_dbgpos, struct_type.type_kind == TYPE_STRUCT);
+    
+    if expr.expr_1.node_kind != `node primary name`
+      complain(0, expr.token, c_string "expected the name of a member of the struct");
+    
+    name : *Token; name = expr.expr_1.token;
+    member_type : *Type;
+    
+    c_for i: s64; i < struct_type.num_members; i += 1;
+    {
+      ith_member_type : *Type; ith_member_type = struct_type.members[i];
+      debug_assert(c_dbgpos, ith_member_type.name_token_opt != null);
+      member_name : *Token; member_name = ith_member_type.name_token_opt;
+      
+      if member_name.size == name.size and memory_equal(member_name.at, name.at, name.size)
+      {
+        member_type = ith_member_type;
+        break;
+      }
+    }
+    
+    if member_type == null
+      complain(0, expr.expr_1.token, c_string "not a member of the struct");
+    
+    result.type = member_type;
+    result.is_lvalue = 1;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node binary +=` or expr_kind == `node binary -=`
+  {
+    lhsv : Expr_Value; lhsv =             fe_compile_expression_recursively(expr.expr_0, current_scope);
+    rhsv : Expr_Value; rhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_1, current_scope));
+    
+    if not lhsv.is_lvalue
+      complain(0, expr.token, c_string "need an lvalue on the left of the assignment operator");
+    
+    
+    if type_kind_is_integer(lhsv.type.type_kind) and type_kind_is_integer(rhsv.type.type_kind)
+    {
+      // this is fine.
+    }
+    else if lhsv.type.type_kind == TYPE_POINTER_TO and type_kind_is_integer(rhsv.type.type_kind)
+    {
+      if lhsv.type.sub_type.type_kind == TYPE_VOID or lhsv.type.sub_type.type_kind == TYPE_FUNCTION
+        complain(0, expr.token, c_string "the pointer is uniterative");
+    }
+    else
+    {
+      complain(0, rhsv.token, c_string "the value can't be implicitly cast to the type on the left of the assignment operator");
+    }
+    
+    result.type = lhsv.type;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node binary +` or expr_kind == `node binary -`
+  {
+    lhsv : Expr_Value; lhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_0, current_scope));
+    rhsv : Expr_Value; rhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_1, current_scope));
+    
+    result.token = expr.token;
+    
+    if type_kind_is_integer(lhsv.type.type_kind) and type_kind_is_integer(rhsv.type.type_kind)
+    {
+      lsize : s64; lsize = type_size_of(lhsv.type);
+      rsize : s64; rsize = type_size_of(rhsv.type);
+      
+      if lsize > rsize  result.type = lhsv.type;
+      else              result.type = rhsv.type;
+    }
+    else if lhsv.type.type_kind == TYPE_POINTER_TO and type_kind_is_integer(rhsv.type.type_kind)
+    {
+      if lhsv.type.sub_type.type_kind == TYPE_VOID or lhsv.type.sub_type.type_kind == TYPE_FUNCTION
+        complain(0, expr.token, c_string "the pointer is uniterative");
+      
+      result.type = lhsv.type;
+    }
+    else if rhsv.type.type_kind == TYPE_POINTER_TO and type_kind_is_integer(lhsv.type.type_kind) and expr_kind == `node binary +`
+    {
+      if rhsv.type.sub_type.type_kind == TYPE_VOID or rhsv.type.sub_type.type_kind == TYPE_FUNCTION
+        complain(0, expr.token, c_string "the pointer is uniterative");
+      
+      result.type = rhsv.type;
+    }
+    else if lhsv.type.type_kind == TYPE_POINTER_TO and rhsv.type.type_kind == TYPE_POINTER_TO and expr_kind == `node binary -`
+    {
+      if not type_equal(lhsv.type.sub_type, rhsv.type.sub_type)
+        complain(0, expr.token, c_string "subtracting pointers of different types");
+      
+      result.type = g_type_s64.&;
+    }
+    else
+    {
+      complain(0, expr.token, c_string "an impossible arithmetic operation");
+    }
+  }
+  else
+  {
+    complain(0, expr.token, c_string "iduno how to PRE-compile this");
+  }
+  
+  debug_assert(c_dbgpos, result.type != null);
+  debug_assert(c_dbgpos, result.token != null);
+  expr.value = result;
+  return result;
+}
+
+type_from_ast : (node: *Ast_Node, current_scope: *Scope) -> *Type
+{
+  debug_assert(c_dbgpos, node != null);
+  
+  type : *Type;
+  node_kind : s64; node_kind = node.node_kind;
+  
+  simple_type_kind : s64;
+  
+       if node_kind == `node primary u64`  simple_type_kind = TYPE_U64;
+  else if node_kind == `node primary u32`  simple_type_kind = TYPE_U32;
+  else if node_kind == `node primary u16`  simple_type_kind = TYPE_U16;
+  else if node_kind == `node primary u8`   simple_type_kind = TYPE_U8;
+  else if node_kind == `node primary s64`  simple_type_kind = TYPE_S64;
+  else if node_kind == `node primary s32`  simple_type_kind = TYPE_S32;
+  else if node_kind == `node primary s16`  simple_type_kind = TYPE_S16;
+  else if node_kind == `node primary s8`   simple_type_kind = TYPE_S8;
+  else if node_kind == `node primary void` simple_type_kind = TYPE_VOID;
+  
+  if simple_type_kind
+  {
+    arena_push_aligner(keep_arena, alignment_of(Type));
+    type = arena_push(keep_arena, size_of(Type));
+    type.type_kind = simple_type_kind;
+    type.token = node.token;
+  }
+  else if node_kind == `node unary *`
+  {
+    arena_push_aligner(keep_arena, alignment_of(Type));
+    type = arena_push(keep_arena, size_of(Type));
+    type.type_kind = TYPE_POINTER_TO;
+    type.token = node.token;
+    type.sub_type = type_from_ast(node.expr_0, current_scope);
+  }
+  else if node_kind == `node function type`
+  {
+    arena_push_aligner(keep_arena, alignment_of(Type));
+    type = arena_push(keep_arena, size_of(Type));
+    type.type_kind = TYPE_FUNCTION;
+    type.token = node.token;
+    type.sub_type = type_from_ast(node.expr_0, current_scope);
+    
+    param_types : *void; param_types = arena_get_top(temp_arena);
+    
+    c_for i: s64; i < node.num_items; i += 1;
+    {
+      param_node : *Ast_Node; param_node = node.items[i];
+      
+      if param_node.node_kind != `node binary :`
+        complain(0, param_node.token, c_string "not a declaration");
+      
+      param_type : *Type; param_type = type_from_ast(param_node.expr_1, current_scope);
+      param_type.name_token_opt = param_node.expr_0.token;
+      param_type.c_name_opt = param_node.expr_0.symbol_by_name.c_name_string;
+      
+      arena_push_copy(temp_arena, size_of(*Type), param_type.&);
+      type.num_params += 1;
+    }
+    
+    arena_push_aligner(keep_arena, alignment_of(*Type));
+    type.params = arena_push_copy(keep_arena, type.num_params * size_of(*Type), param_types);
+    arena_pop_to_pointer(temp_arena, param_types);
+  }
+  else if node_kind == `node struct`
+  {
+    arena_push_aligner(keep_arena, alignment_of(Type));
+    type = arena_push(keep_arena, size_of(Type));
+    type.type_kind = TYPE_STRUCT;
+    type.token = node.token;
+    
+    debug_assert(c_dbgpos, node.struct_c_name != null);
+    type.struct_c_name = node.struct_c_name;
+    
+    members_types : *void; members_types = arena_get_top(temp_arena);
+    
+    c_for i: s64; i < node.num_items; i += 1;
+    {
+      member_node : *Ast_Node; member_node = node.items[i];
+      
+      if member_node.node_kind != `node binary :`
+        complain(0, member_node.token, c_string "not a declaration");
+      
+      param_type : *Type; param_type = type_from_ast(member_node.expr_1, current_scope);
+      param_type.name_token_opt = member_node.expr_0.token;
+      param_type.c_name_opt = member_node.expr_0.symbol_by_name.c_name_string;
+      
+      arena_push_copy(temp_arena, size_of(*Type), param_type.&);
+      type.num_members += 1;
+    }
+    
+    arena_push_aligner(keep_arena, alignment_of(*Type));
+    type.members = arena_push_copy(keep_arena, type.num_members * size_of(*Type), members_types);
+    arena_pop_to_pointer(temp_arena, members_types);
+  }
+  else if node_kind == `node primary name`
+  {
+    symbol : *Symbol; symbol = node.symbol_by_name;
+    
+    if symbol == null
+    {
+      symbol = scope_find_symbol_by_name(current_scope, node.token.size, node.token.at);
+      
+      if symbol == null  complain(0, node.token, c_string "no such symbol");
+      
+      node.symbol_by_name = symbol;
+    }
+    
+    if symbol.storage != STORAGE_C_TYPEDEF
+      complain(0, node.token, c_string "a valid symbol but not a type");
+    
+    if symbol.type == null
+    {
+      debug_assert(c_dbgpos, symbol.ast_node_as_void_ptr != null);
+      
+      decl_node : *Ast_Node; decl_node = symbol.ast_node_as_void_ptr;
+      
+      debug_assert(c_dbgpos, decl_node.node_kind == `node binary :`);
+      
+      arena_push_aligner(keep_arena, alignment_of(Type));
+      actual_type : *Type; actual_type = arena_push(keep_arena, size_of(Type));
+      symbol.type = actual_type;
+      // NOTE: this prevents it from hitting (symbol->type == NULL) again, allowing recursive type definitions
+      // ALSO NOTE: type_size_of and type_alignment_of are not going to be happy about it
+      
+      copy_type : *Type; copy_type = type_from_ast(decl_node.expr_1, current_scope);
+      actual_type.* = copy_type.*;
+    }
+    
+    type = symbol.type;
+  }
+  else
+  {
+    complain(0, node.token, c_string "not a type");
+  }
+  
+  debug_assert(c_dbgpos, type != null);
+  return type;
+}
+
+fe_compile_statement_recursively : (stmt: *Ast_Node, current_scope: *Scope, current_function_symbol: *Symbol) -> void
+{
+  stmt_kind : s64; stmt_kind = stmt.node_kind;
+  
+  if stmt_kind == `node statement root`
+  {
+    c_for i: s64; i < stmt.num_items; i += 1;
+    {
+      sub_stmt : *Ast_Node; sub_stmt = stmt.items[i];
+      
+      if sub_stmt.node_kind == `node binary :`
+      {
+        symbol : *Symbol; symbol = sub_stmt.expr_0.symbol_by_name;
+        debug_assert(c_dbgpos, symbol.storage == STORAGE_UNDEFINED);
+        
+             if symbol.c_typedef_token   symbol.storage = STORAGE_C_TYPEDEF;
+        else if symbol.c_extern_token    symbol.storage = STORAGE_EXTERN;
+        else                             symbol.storage = STORAGE_STATIC;
+        
+        if symbol.type == null  symbol.type = type_from_ast(sub_stmt.expr_1, stmt.scope.&);
+      }
+    }
+    
+    c_for i: s64; i < stmt.num_items; i += 1;
+      fe_compile_statement_recursively(stmt.items[i], stmt.scope.&, null);
+  }
+  else if stmt_kind == `node statement list`
+  {
+    c_for i: s64; i < stmt.num_items; i += 1;
+    {
+      sub_stmt : *Ast_Node; sub_stmt = stmt.items[i];
+      
+      if sub_stmt.node_kind == `node binary :`
+      {
+        symbol : *Symbol; symbol = sub_stmt.expr_0.symbol_by_name;
+        debug_assert(c_dbgpos, symbol.storage == STORAGE_UNDEFINED);
+        
+             if symbol.c_typedef_token                             symbol.storage = STORAGE_C_TYPEDEF;
+        else if symbol.c_extern_token                              symbol.storage = STORAGE_EXTERN;
+        else if sub_stmt.expr_1.node_kind == `node function type`  symbol.storage = STORAGE_STATIC;
+        else                                                       symbol.storage = STORAGE_LOCAL;
+        
+        if symbol.type == null  symbol.type = type_from_ast(sub_stmt.expr_1, stmt.scope.&);
+      }
+    }
+    
+    c_for i: s64; i < stmt.num_items; i += 1;
+      fe_compile_statement_recursively(stmt.items[i], stmt.scope.&, current_function_symbol);
+  }
+  else if stmt_kind == `node binary :`
+      and stmt.expr_1.node_kind == `node function type`
+      and stmt.stmt_0 != null
+  {
+    function_symbol : *Symbol; function_symbol = stmt.expr_0.symbol_by_name;
+    debug_assert(c_dbgpos, function_symbol != null);
+    
+    c_for i: s64; i < stmt.expr_1.num_items; i += 1;
+    {
+      param_node : *Ast_Node; param_node = stmt.expr_1.items[i];
+      debug_assert(c_dbgpos, param_node.node_kind == `node binary :`);
+      
+      param_symbol : *Symbol; param_symbol = param_node.expr_0.symbol_by_name;
+      
+      debug_assert(c_dbgpos, param_symbol.storage == STORAGE_UNDEFINED);
+      param_symbol.storage = STORAGE_LOCAL;
+      param_symbol.local_is_active = 1;
+      
+      if param_symbol.type == null  param_symbol.type = type_from_ast(param_node.expr_1, current_scope);
+    }
+    
+    fe_compile_statement_recursively(stmt.stmt_0, current_scope, function_symbol);
+  }
+  else if stmt_kind == `node binary :`
+  {
+    symbol : *Symbol; symbol = stmt.expr_0.symbol_by_name;
+    
+    if symbol.storage == STORAGE_LOCAL  symbol.local_is_active = 1;
+  }
+  else if stmt_kind == `node c_enum`
+  {
+    // do nothing?
+  }
+  else if stmt_kind == `node statement break`
+  {
+    // do nothing!
+  }
+  else if stmt_kind == `node statement continue`
+  {
+    // do nothing...
+  }
+  else if stmt_kind == `node statement if-else`
+  {
+    fe_compile_expression_recursively(stmt.expr_0, current_scope);
+    fe_compile_statement_recursively(stmt.stmt_0, current_scope, current_function_symbol);
+    
+    if stmt.stmt_1  fe_compile_statement_recursively(stmt.stmt_1, current_scope, current_function_symbol);
+  }
+  else if stmt_kind == `node statement while`
+  {
+    fe_compile_expression_recursively(stmt.expr_0, current_scope);
+    fe_compile_statement_recursively(stmt.stmt_0, current_scope, current_function_symbol);
+  }
+  else if stmt_kind == `node statement do-while`
+  {
+    fe_compile_statement_recursively(stmt.stmt_0, current_scope, current_function_symbol);
+    fe_compile_expression_recursively(stmt.expr_0, current_scope);
+  }
+  else if stmt_kind == `node statement c_for`
+  {
+    if stmt.expr_0
+    {
+      decl : *Ast_Node; decl = stmt.expr_0;
+      debug_assert(c_dbgpos, decl.node_kind == `node binary :`);
+      
+      symbol : *Symbol; symbol = decl.expr_0.symbol_by_name;
+      debug_assert(c_dbgpos, symbol.storage == STORAGE_UNDEFINED);
+      
+      error_assert(c_dbgpos, symbol.c_typedef_token == null);
+      error_assert(c_dbgpos, symbol.c_extern_token == null);
+      error_assert(c_dbgpos, stmt.expr_0.node_kind != `node function type`);
+      
+      symbol.storage = STORAGE_LOCAL;
+      symbol.local_is_active = 1;
+      
+      if symbol.type == null  symbol.type = type_from_ast(decl.expr_1, stmt.scope.&);
+    }
+    
+    if stmt.expr_1  fe_compile_expression_recursively(stmt.expr_1, stmt.scope.&);
+    if stmt.expr_2  fe_compile_expression_recursively(stmt.expr_2, stmt.scope.&);
+    
+    fe_compile_statement_recursively(stmt.stmt_0, stmt.scope.&, current_function_symbol);
+  }
+  else if stmt_kind == `node statement return`
+  {
+    debug_assert(c_dbgpos, current_function_symbol != null);
+    debug_assert(c_dbgpos, current_function_symbol.type != null);
+    debug_assert(c_dbgpos, current_function_symbol.type.sub_type != null);
+    
+    if stmt.expr_0
+    {
+      rvalue : Expr_Value; rvalue = rvalue_from(fe_compile_expression_recursively(stmt.expr_0, current_scope));
+      
+      if not type_implicit_cast_is_possible(current_function_symbol.type.sub_type, rvalue.type)
+        complain(0, rvalue.token, c_string "the value can't be implicitly cast to the return type");
+    }
+  }
+  else
+  {
+    fe_compile_expression_recursively(stmt, current_scope);
+  }
+}
+
+scope_define_recursively : (node : *Ast_Node, parent_scope: *Scope) -> void
+{
+  node_kind : u64; node_kind = node.node_kind;
+  
+  if node_kind == `node statement root` or node_kind == `node statement list`
+  {
+    scope_holder : *Ast_Node; scope_holder = node;
+    arena_push_aligner(keep_arena, alignment_of(*Symbol));
+    scope_holder.scope.symbols = arena_get_top(keep_arena);
+    scope_holder.scope.parent = parent_scope;
+    
+    scope_append_declarations_from_list(scope_holder.scope.&, node.num_items, node.items);
+    
+    c_for i: s64; i < node.num_items; i += 1;
+      scope_define_recursively(node.items[i], scope_holder.scope.&);
+  }
+  else if node_kind == `node statement c_for`
+  {
+    scope_holder : *Ast_Node; scope_holder = node;
+    arena_push_aligner(keep_arena, alignment_of(*Symbol));
+    scope_holder.scope.symbols = arena_get_top(keep_arena);
+    scope_holder.scope.parent = parent_scope;
+    
+    if node.expr_0  scope_append_declarations_from_list(scope_holder.scope.&, 1, node.expr_0.&);
+    
+    scope_define_recursively(node.stmt_0, scope_holder.scope.&);
+  }
+  else if node_kind == `node statement if-else`
+  {
+    scope_define_recursively(node.stmt_0, parent_scope);
+    
+    if node.stmt_1  scope_define_recursively(node.stmt_1, parent_scope);
+  }
+  else if node_kind == `node statement while`
+  {
+    scope_define_recursively(node.stmt_0, parent_scope);
+  }
+  else if node_kind == `node statement do-while`
+  {
+    scope_define_recursively(node.stmt_0, parent_scope);
+  }
+  else if node_kind == `node binary :`
+      and node.expr_1.node_kind == `node function type`
+      and node.stmt_0 != null
+  {
+    debug_assert(c_dbgpos, node.stmt_0.node_kind == `node statement list`);
+    scope_holder : *Ast_Node; scope_holder = node.stmt_0;
+    arena_push_aligner(keep_arena, alignment_of(*Symbol));
+    scope_holder.scope.symbols = arena_get_top(keep_arena);
+    scope_holder.scope.parent = parent_scope;
+    
+    scope_append_declarations_from_list(scope_holder.scope.&, node.expr_1.num_items, node.expr_1.items);
+    scope_append_declarations_from_list(scope_holder.scope.&, node.stmt_0.num_items, node.stmt_0.items);
+    
+    c_for i: s64; i < node.stmt_0.num_items; i += 1;
+      scope_define_recursively(node.stmt_0.items[i], scope_holder.scope.&);
+  }
+}
+
+array_find_symbol_by_name : (num_symptrs: s64, symptrs: **Symbol, name_length: s64, name: *u8) -> *Symbol
+{
+  c_for symptr_index: s64; symptr_index < num_symptrs; symptr_index += 1;
+  {
+    symbol : *Symbol; symbol = symptrs[symptr_index];
+    
+    if symbol.token.size == name_length and memory_equal(name, symbol.token.at, name_length)
+      return symbol;
+  }
+  
+  return null;
+}
+
+scope_find_symbol_by_name : (current_scope: *Scope, name_length: s64, name: *u8) -> *Symbol
+{
+  scope : *Scope; scope = current_scope; // TODO: put it inside the c_for's init
+
+  c_for ; scope != null; scope = scope.parent;
+  {
+    s : *Symbol; s = array_find_symbol_by_name(scope.num_symbols, scope.symbols, name_length, name);
+    
+    if s  return s;
+  }
+  
+  return null;
+}
+
+scope_append_declarations_from_list : (scope: *Scope, num_items: s64, items: **Ast_Node) -> void
+{
+  c_for i: s64; i < num_items; i += 1;
+  {
+    node : *Ast_Node; node = items[i];
+    
+    if node.node_kind == `node binary :`
+    {
+      symbol : *Symbol; symbol = node.expr_0.symbol_by_name;
+      debug_assert(c_dbgpos, symbol != null);
+      
+      prev : *Symbol; prev = array_find_symbol_by_name(scope.num_symbols, scope.symbols, symbol.token.size, symbol.token.at);
+      
+      if prev
+      {
+        complain(COMPLAIN_ERROR, symbol.token, c_string "symbol declared twice in the same scope");
+        complain(COMPLAIN_NOTE, prev.token, c_string "here is another declaration");
+        process_exit(1);
+      }
+
+      arena_push_copy(keep_arena, size_of(*Symbol), symbol.&);
+      scope.num_symbols += 1; // the symbol is now declared but it is not yet defined
+    }
+    else if node.node_kind == `node c_enum`
+    {
+      c_for ci: s64; ci < node.num_items; ci += 1;
+      {
+        name : *Ast_Node; name = node.items[ci];
+        symbol : *Symbol; symbol = name.symbol_by_name;
+        debug_assert(c_dbgpos, symbol != null);
+      
+        prev : *Symbol; prev = array_find_symbol_by_name(scope.num_symbols, scope.symbols, symbol.token.size, symbol.token.at);
+        
+        if prev
+        {
+          complain(COMPLAIN_ERROR, symbol.token, c_string "symbol declared twice in the same scope");
+          complain(COMPLAIN_NOTE, prev.token, c_string "here is another declaration");
+          process_exit(1);
+        }
+        
+        symbol.type = g_type_s64.&;
+        symbol.c_enum_value = ci;
+        symbol.storage = STORAGE_C_ENUM;
+
+        arena_push_copy(keep_arena, size_of(*Symbol), symbol.&);
+        scope.num_symbols += 1; // the symbol is now declared but it is not yet defined
+      }
+    }
+  }
+}
+
+// the operator precedence:
+// 0.  x(...)  x[i]  x.*  x.&  x.y  x.cast(y)
+// 1.  +x  -x  ^x  *x  not x  size_of x  alignment_of x
+// 2.  +  -  *  /  %  &  |  ^  <<  >>
+// 3.  ==  !=  <=  >=  <  >
+// 4.  and
+// 5.  or
+// 6.  =  +=  -=  *=  /=  %=  &=  |=  ^=  <<=  >>=
+// 7.  :
+// 8.  c_name x y   c_extern x   c_typedef x
+
+parse_expression : (parser: *Parser, minimal_precedence: u64) -> *Ast_Node
+{
+  lhs: *Ast_Node;
+  
+  primary_kind : s64;
+  prefix_kind  : s64;
+  prefix_precedence : u64; prefix_precedence = 0x100;
+  
+       if parser_inspect(parser, `token name`     )  primary_kind = `node primary name`;
+  else if parser_inspect(parser, `token null`     )  primary_kind = `node primary null`;
+  else if parser_inspect(parser, `token void`     )  primary_kind = `node primary void`;
+  else if parser_inspect(parser, `token u64`      )  primary_kind = `node primary u64`;
+  else if parser_inspect(parser, `token u32`      )  primary_kind = `node primary u32`;
+  else if parser_inspect(parser, `token u16`      )  primary_kind = `node primary u16`;
+  else if parser_inspect(parser, `token u8`       )  primary_kind = `node primary u8`;
+  else if parser_inspect(parser, `token s64`      )  primary_kind = `node primary s64`;
+  else if parser_inspect(parser, `token s32`      )  primary_kind = `node primary s32`;
+  else if parser_inspect(parser, `token s16`      )  primary_kind = `node primary s16`;
+  else if parser_inspect(parser, `token s8`       )  primary_kind = `node primary s8`;
+  else if parser_inspect(parser, `token c_dbgpos` )  primary_kind = `node primary c_dbgpos`;
+  else if parser_inspect(parser, `token integer`  )  primary_kind = `node primary integer`;
+  else if parser_inspect(parser, `token character`)  primary_kind = `node primary character`;
+  else if parser_inspect(parser, `token +`           )  prefix_kind = `node unary +`;
+  else if parser_inspect(parser, `token -`           )  prefix_kind = `node unary -`;
+  else if parser_inspect(parser, `token ^`           )  prefix_kind = `node unary ^`;
+  else if parser_inspect(parser, `token *`           )  prefix_kind = `node unary *`;
+  else if parser_inspect(parser, `token not`         )  prefix_kind = `node unary not`;
+  else if parser_inspect(parser, `token size_of`     )  prefix_kind = `node unary size_of`;
+  else if parser_inspect(parser, `token alignment_of`)  prefix_kind = `node unary alignment_of`;
+  
+  if primary_kind
+  {
+    parser_proceed(parser);
+    lhs = ast_create_node(primary_kind, parser_at(parser, -1));
+  }
+  else if prefix_kind
+  {
+    parser_proceed(parser);
+    lhs = ast_create_node(prefix_kind, parser_at(parser, -1));
+    lhs.expr_0 = parse_expression(parser, prefix_precedence);
+  }
+  else if parser_accept(parser, `token c_string`)
+  {
+    the_string : *Token; the_string = parser_expect(parser, `token string`, c_string "the string constant after c_string");
+    lhs = ast_create_node(`node primary c_string`, the_string);
+  }
+  else if parser_accept(parser, `token struct`)
+  {
+    lhs = ast_create_node(`node struct`, parser_at(parser, -1));
+    
+    g_next_address += 1;
+    lhs.struct_c_name = arena_get_top(keep_arena);
+    arena_print_address(keep_arena, g_next_address);
+    arena_push(keep_arena, 1);
+    
+    members : *void; members = arena_get_top(temp_arena);
+    
+    parser_expect(parser, `token {`, c_string "the openning curly brace '{' of the struct");
+    
+    while parser_tokens_left(parser) > 0 and not parser_inspect(parser, `token }`)
+    {
+      member : *Ast_Node; member = parse_expression(parser, 0);
+      parser_expect(parser, `token ;`, c_string "the semicolon ';' after the member declaration");
+      arena_push_copy(temp_arena, size_of(*Ast_Node), member.&);
+      lhs.num_items += 1;
+    }
+    
+    parser_expect(parser, `token }`, c_string "the closing curly brace '}' of the struct");
+    
+    arena_push_aligner(keep_arena, alignment_of(*Ast_Node));
+    lhs.items = arena_push_copy(keep_arena, lhs.num_items * size_of(*Ast_Node), members);
+    arena_pop_to_pointer(temp_arena, members);
+  }
+  else if parser_accept(parser, `token c_extern`)
+  {
+    c_extern_token : *Token; c_extern_token = parser_at(parser, -1);
+    lhs = parse_expression(parser, 0);
+    
+    if lhs.node_kind != `node binary :`  complain(0, lhs.token, c_string "not a declaration after c_extern");
+    
+    debug_assert(c_dbgpos, lhs.expr_0.symbol_by_name != null);
+    lhs.expr_0.symbol_by_name.c_extern_token = c_extern_token;
+  }
+  else if parser_accept(parser, `token c_typedef`)
+  {
+    c_typedef_token : *Token; c_typedef_token = parser_at(parser, -1);
+    lhs = parse_expression(parser, 0);
+    
+    if lhs.node_kind != `node binary :`  complain(0, lhs.token, c_string "not a declaration after c_typedef");
+    
+    debug_assert(c_dbgpos, lhs.expr_0.symbol_by_name != null);
+    lhs.expr_0.symbol_by_name.c_typedef_token = c_typedef_token;
+  }
+  else if parser_accept(parser, `token c_name`)
+  {
+    the_name : *Token; the_name = parser_expect(parser, `token name`, c_string "the C name");
+    
+    lhs = parse_expression(parser, 0);
+    
+    if lhs.node_kind != `node binary :`  complain(0, lhs.token, c_string "not a declaration after c_name");
+    
+    debug_assert(c_dbgpos, lhs.expr_0.symbol_by_name != null);
+    lhs.expr_0.symbol_by_name.c_name_string = arena_get_top(keep_arena);
+    arena_print_bytes(keep_arena, the_name.size, the_name.at);
+    arena_push(keep_arena, 1);
+  }
+  else
+  {
+    function : *Ast_Node;
+    
+    token : *Token; token = parser_expect(parser, `token (`, c_string "a primary expression");
+    
+    if parser_accept(parser, `token )`)
+    {
+      function = ast_create_node(`node function type`, token);
+    }
+    else
+    {
+      param0_or_subexpr : *Ast_Node; param0_or_subexpr = parse_expression(parser, 0);
+      
+      if param0_or_subexpr.node_kind == `node binary :`
+      {
+        function = ast_create_node(`node function type`, token);
+        param0 : *Ast_Node; param0 = param0_or_subexpr;
+        
+        params : *void; params = arena_push_copy(temp_arena, size_of(*Ast_Node), param0.&);
+        function.num_items = 1;
+        
+        while parser_accept(parser, `token ,`)
+        {
+          if parser_inspect(parser, `token )`)  break;
+          
+          param : *Ast_Node; param = parse_expression(parser, 0);
+          arena_push_copy(temp_arena, size_of(*Ast_Node), param.&);
+          function.num_items += 1;
+        }
+        
+        parser_expect(parser, `token )`, c_string "the closing parenthesis ')' of the function type");
+        
+        arena_push_aligner(keep_arena, alignment_of(*Ast_Node));
+        function.items = arena_push_copy(keep_arena, function.num_items * size_of(*Ast_Node), params);
+        arena_pop_to_pointer(temp_arena, params);
+      }
+      else
+      {
+        lhs = param0_or_subexpr;
+        parser_expect(parser, `token )`, c_string "the closing parenthesis ')' of the sub-expression");
+      }
+    }
+    
+    if (function)
+    {
+      function.token = parser_expect(parser, `token ->`, c_string "the arrow '->' in the function type");
+      function.expr_0 = parse_expression(parser, 0);
+      lhs = function;
+    }
+  }
+  
+  c_for ;;;
+  {
+    binary_kind   : s64;
+    postfix_kind  : s64;
+    precedence    : u64;
+    right_to_left : u64;
+    
+         if parser_inspect(parser, `token .`)  { binary_kind = `node binary .`; precedence = 0x110; }
+    //
+    else if parser_inspect(parser, `token +` )  { binary_kind = `node binary +` ; precedence = 0x070; }
+    else if parser_inspect(parser, `token -` )  { binary_kind = `node binary -` ; precedence = 0x070; }
+    else if parser_inspect(parser, `token *` )  { binary_kind = `node binary *` ; precedence = 0x070; }
+    else if parser_inspect(parser, `token /` )  { binary_kind = `node binary /` ; precedence = 0x070; }
+    else if parser_inspect(parser, `token %` )  { binary_kind = `node binary %` ; precedence = 0x070; }
+    else if parser_inspect(parser, `token &` )  { binary_kind = `node binary &` ; precedence = 0x070; }
+    else if parser_inspect(parser, `token ^` )  { binary_kind = `node binary ^` ; precedence = 0x070; }
+    else if parser_inspect(parser, `token |` )  { binary_kind = `node binary |` ; precedence = 0x070; }
+    else if parser_inspect(parser, `token <<`)  { binary_kind = `node binary <<`; precedence = 0x070; }
+    else if parser_inspect(parser, `token >>`)  { binary_kind = `node binary >>`; precedence = 0x070; }
+    //
+    else if parser_inspect(parser, `token ==`)  { binary_kind = `node binary ==`; precedence = 0x060; }
+    else if parser_inspect(parser, `token !=`)  { binary_kind = `node binary !=`; precedence = 0x060; }
+    else if parser_inspect(parser, `token <=`)  { binary_kind = `node binary <=`; precedence = 0x060; }
+    else if parser_inspect(parser, `token >=`)  { binary_kind = `node binary >=`; precedence = 0x060; }
+    else if parser_inspect(parser, `token <` )  { binary_kind = `node binary <` ; precedence = 0x060; }
+    else if parser_inspect(parser, `token >` )  { binary_kind = `node binary >` ; precedence = 0x060; }
+    //
+    else if parser_inspect(parser, `token and`)  { binary_kind = `node binary and`; precedence = 0x050; }
+    //
+    else if parser_inspect(parser, `token or`)  { binary_kind = `node binary or`; precedence = 0x040; }
+    //
+    else if parser_inspect(parser, `token =`  )  { binary_kind = `node binary =`  ; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token +=` )  { binary_kind = `node binary +=` ; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token -=` )  { binary_kind = `node binary -=` ; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token *=` )  { binary_kind = `node binary *=` ; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token /=` )  { binary_kind = `node binary /=` ; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token %=` )  { binary_kind = `node binary %=` ; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token &=` )  { binary_kind = `node binary &=` ; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token ^=` )  { binary_kind = `node binary ^=` ; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token |=` )  { binary_kind = `node binary |=` ; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token <<=`)  { binary_kind = `node binary <<=`; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token >>=`)  { binary_kind = `node binary >>=`; precedence = 0x030; right_to_left = 1; }
+    //
+    else if parser_inspect(parser, `token :`)  { binary_kind = `node binary :`; precedence = 0x010; }
+    //
+    else if parser_inspect(parser, `token (` )  { postfix_kind = `node function call`; precedence = 0x110; }
+    else if parser_inspect(parser, `token [` )  { postfix_kind = `node binary index` ; precedence = 0x110; }
+    else if parser_inspect(parser, `token .*`)  { postfix_kind = `node unary .*`     ; precedence = 0x110; }
+    else if parser_inspect(parser, `token .&`)  { postfix_kind = `node unary .&`     ; precedence = 0x110; }
+    
+    
+    if binary_kind == `node binary .` and parser_safe_at(parser, 1).token_kind == `token cast`
+    {
+      if precedence < minimal_precedence  break;
+      
+      parser_proceed(parser);
+      parser_proceed(parser);
+      
+      new_lhs : *Ast_Node; new_lhs = ast_create_node(`node binary cast`, parser_at(parser, -1));
+      new_lhs.expr_0 = lhs;
+      new_lhs.expr_1 = parse_expression(parser, 0x200);
+      lhs = new_lhs;
+    }
+    else if binary_kind
+    {
+      if precedence < minimal_precedence  break;
+      
+      parser_proceed(parser);
+      new_lhs : *Ast_Node; new_lhs = ast_create_node(binary_kind, parser_at(parser, -1));
+      new_lhs.expr_0 = lhs;
+      new_lhs.expr_1 = parse_expression(parser, precedence + not(right_to_left));
+      lhs = new_lhs;
+      
+      if binary_kind == `node binary :`
+      {
+        if new_lhs.expr_0.node_kind != `node primary name`
+          complain(0, new_lhs.expr_0.token, c_string "not a name in the declaration");
+        
+        arena_push_aligner(keep_arena, alignment_of(Symbol));
+        symbol : *Symbol; symbol = arena_push(keep_arena, size_of(Symbol));
+        symbol.token = new_lhs.expr_0.token;
+        symbol.ast_node_as_void_ptr = new_lhs;
+        
+        g_next_address += 1;
+        symbol.c_name_string = arena_get_top(keep_arena);
+        arena_print_address(keep_arena, g_next_address);
+        arena_push(keep_arena, 1);
+        new_lhs.expr_0.symbol_by_name = symbol;
+      }
+    }
+    else if postfix_kind
+    {
+      if precedence < minimal_precedence  break;
+      
+      parser_proceed(parser);
+      new_lhs : *Ast_Node; new_lhs = ast_create_node(postfix_kind, parser_at(parser, -1));
+      new_lhs.expr_0 = lhs;
+      lhs = new_lhs;
+      
+      if postfix_kind == `node function call`
+      {
+        args : *void; args = arena_get_top(temp_arena);
+        can_continue : u64; can_continue = 1;
+        
+        while parser_tokens_left(parser) > 0 and not parser_inspect(parser, `token )`) and can_continue
+        {
+          arg : *Ast_Node; arg = parse_expression(parser, 0);
+          arena_push_copy(temp_arena, size_of(*Ast_Node), arg.&);
+          new_lhs.num_items += 1;
+          can_continue = (parser_accept(parser, `token ,`) != null);
+        }
+        
+        parser_expect(parser, `token )`, c_string "the closing parenthesis ')' of the function call");
+        
+        arena_push_aligner(keep_arena, alignment_of(*Ast_Node));
+        new_lhs.items = arena_push_copy(keep_arena, new_lhs.num_items * size_of(*Ast_Node), args);
+        arena_pop_to_pointer(temp_arena, args);
+      }
+      else if postfix_kind == `node binary index`
+      {
+        new_lhs.expr_1 = parse_expression(parser, 0);
+        error_assert(c_dbgpos, new_lhs.expr_1.node_kind != `node binary :`);
+        parser_expect(parser, `token ]`, c_string "the closing bracket ']' of the index operator");
+      }
+    }
+    else
+    {
+      break;
+    }
+  }
+  
+  debug_assert(c_dbgpos, lhs != null);
+  return lhs;
+}
+
+ast_debug_print_to_console_error : (root: *Ast_Node) -> void
+{
+  string : *u8; string = arena_get_top(temp_arena);
+  arena_print_cstring(temp_arena, c_string "  AST:\n");
+  
+  ast_debug_print_recursively(root, 0, c_string "root", -1, temp_arena);
+  
+  arena_print_cstring(temp_arena, c_string "\n\n");
+  arena_push(temp_arena, 1);
+  
+  console_error_print_cstring(string);
+  arena_pop_to_pointer(temp_arena, string);
+}
+
+ast_debug_print_recursively : (node : *Ast_Node, spaces: u64, title: *u8, index_opt: s64, result_arena: *Arena) -> void
+{
+  arena_print_row(result_arena, spaces, ' ');
+  
+  if index_opt >= 0
+  {
+    arena_print_cstring(result_arena, c_string "[");
+    arena_print_s64(result_arena, index_opt, 10, 2);
+    arena_print_cstring(result_arena, c_string "]  ");
+  }
+  
+  arena_print_cstring(result_arena, title);
+  arena_print_cstring(result_arena, c_string "  ");
+  
+  if node != null
+  {
+    if node.node_kind != 0
+    {
+      arena_print_cstring(result_arena, c_string_from_node_kind(node.node_kind));
+      arena_print_cstring(result_arena, c_string "  ");
+    }
+    else
+    {
+      arena_print_cstring(result_arena, c_string "(ast->kind == 0)  ");
+    }
+    
+    if node.scope.symbols != null
+    {
+      arena_print_cstring(result_arena, c_string "symbols[");
+      arena_print_s64(result_arena, node.scope.num_symbols, 10, 0);
+      arena_print_cstring(result_arena, c_string "]  ");
+    }
+    
+    if node.items != null
+    {
+      arena_print_cstring(result_arena, c_string "items[");
+      arena_print_s64(result_arena, node.num_items, 10, 0);
+      arena_print_cstring(result_arena, c_string "]  ");
+    }
+    
+    arena_print_cstring(result_arena, c_string "{ ");
+    
+    if node.token != null
+    {
+      if node.token.at != null and node.token.size >= 0
+      {
+        arena_print_cstring(result_arena, c_string "'");
+        arena_print_bytes(result_arena, node.token.size, node.token.at);
+        arena_print_cstring(result_arena, c_string "' ");
+      }
+      else
+      {
+        arena_print_cstring(result_arena, c_string "(node.token is invalid ");
+      }
+      
+      if node.token.token_kind == 0
+        arena_print_cstring(result_arena, c_string "(node.token.token_kind == 0)");
+    }
+    else
+    {
+      arena_print_cstring(result_arena, c_string "(node.token == NULL)");
+    }
+    
+    arena_print_cstring(result_arena, c_string " }  ");
+  }
+  else
+  {
+    arena_print_cstring(result_arena, c_string "(node == NULL)  ");
+  }
+  
+  arena_print_cstring(result_arena, c_string "\n");
+  
+  sub_spaces : u64; sub_spaces = spaces + 4;
+  
+  if node != null and node.symbol_by_name != null
+  {
+    symbol : *Symbol; symbol = node.symbol_by_name;
+    
+    arena_print_row(result_arena, sub_spaces, ' ');
+    arena_print_cstring(result_arena, c_string "symbol_by_name  ");
+    arena_print_bytes(result_arena, symbol.token.size, symbol.token.at);
+    arena_print_cstring(result_arena, c_string "  ");
+    arena_print_cstring(result_arena, symbol.c_name_string);
+    arena_print_cstring(result_arena, c_string "\n");
+  }
+  
+  if node != null
+  {
+    if node.scope.symbols != null
+    {
+      c_for i: s64; i < node.scope.num_symbols; i += 1;
+      {
+        symbol : *Symbol; symbol = node.scope.symbols[i];
+        
+        arena_print_row(result_arena, sub_spaces, ' ');
+        arena_print_cstring(result_arena, c_string "symbol [");
+        arena_print_s64(result_arena, i, 10, 2);
+        arena_print_cstring(result_arena, c_string "]  ");
+        arena_print_bytes(result_arena, symbol.token.size, symbol.token.at);
+        arena_print_cstring(result_arena, c_string "  ");
+        arena_print_cstring(result_arena, symbol.c_name_string);
+        arena_print_cstring(result_arena, c_string "\n");
+      }
+    }
+  
+    if node.expr_0 != null  ast_debug_print_recursively(node.expr_0, sub_spaces, c_string "expr_0", -1, result_arena);
+    if node.expr_1 != null  ast_debug_print_recursively(node.expr_1, sub_spaces, c_string "expr_1", -1, result_arena);
+    if node.expr_2 != null  ast_debug_print_recursively(node.expr_2, sub_spaces, c_string "expr_2", -1, result_arena);
+    if node.stmt_0 != null  ast_debug_print_recursively(node.stmt_0, sub_spaces, c_string "stmt_0", -1, result_arena);
+    if node.stmt_1 != null  ast_debug_print_recursively(node.stmt_1, sub_spaces, c_string "stmt_1", -1, result_arena);
+    
+    if node.items != null
+      c_for i: s64; i < node.num_items; i += 1;
+        ast_debug_print_recursively(node.items[i], sub_spaces, c_string "item", i, result_arena);
+  }
+}
+
+arena_print_address : (arena: *Arena, address: s64) -> void
+{
+  arena_print_cstring(arena, c_string "A_");
+  arena_print_u64(arena, address, 16, 5); // to pad or not to pad that is the question
+}
+
+parse_statement : (parser: *Parser) -> *Ast_Node
+{
+  stmt : *Ast_Node;
+  
+  if parser_accept(parser, `token {`)
+  {
+    stmt = ast_create_node(`node statement list`, parser_at(parser, -1));
+    sub_stmts : *void; sub_stmts = arena_get_top(temp_arena);
+    
+    while parser_tokens_left(parser) > 0 and not parser_inspect(parser, `token }`)
+    {
+      sub_stmt : *Ast_Node; sub_stmt = parse_statement(parser);
+      arena_push_copy(temp_arena, size_of(*Ast_Node), sub_stmt.&);
+      stmt.num_items += 1;
+    }
+    
+    parser_expect(parser, `token }`, c_string "the closing curly brace '}' for the statement list");
+    
+    arena_push_aligner(keep_arena, alignment_of(*Ast_Node));
+    stmt.items = arena_push_copy(keep_arena, stmt.num_items * size_of(*Ast_Node), sub_stmts);
+    arena_pop_to_pointer(temp_arena, sub_stmts);
+  }
+  else if parser_accept(parser, `token if`)
+  {
+    stmt = ast_create_node(`node statement if-else`, parser_at(parser, -1));
+    
+    stmt.expr_0 = parse_expression(parser, 0);
+    stmt.stmt_0 = parse_statement(parser);
+    error_assert(c_dbgpos, stmt.stmt_0.node_kind != `node binary :`);
+    
+    if parser_accept(parser, `token else`)
+    {
+      stmt.stmt_1 = parse_statement(parser);
+      error_assert(c_dbgpos, stmt.stmt_1.node_kind != `node binary :`);
+    }
+  }
+  else if parser_accept(parser, `token while`)
+  {
+    stmt = ast_create_node(`node statement while`, parser_at(parser, -1));
+    
+    stmt.expr_0 = parse_expression(parser, 0);
+    stmt.stmt_0 = parse_statement(parser);
+    error_assert(c_dbgpos, stmt.stmt_0.node_kind != `node binary :`);
+  }
+  else if parser_accept(parser, `token do`)
+  {
+    stmt = ast_create_node(`node statement do-while`, parser_at(parser, -1));
+    
+    stmt.stmt_0 = parse_statement(parser);
+    error_assert(c_dbgpos, stmt.stmt_0.node_kind != `node binary :`);
+    
+    parser_expect(parser, `token while`, c_string "the 'while' keyword in the do-while loop");
+    stmt.expr_0 = parse_expression(parser, 0);
+    parser_expect(parser, `token ;`, c_string "the semicolon ';' after the condition");
+  }
+  else if parser_accept(parser, `token c_for`)
+  {
+    stmt = ast_create_node(`node statement c_for`, parser_at(parser, -1));
+    
+    if not parser_inspect(parser, `token ;`)
+    {
+      stmt.expr_0 = parse_expression(parser, 0);
+      error_assert(c_dbgpos, stmt.expr_0.node_kind == `node binary :`);
+    }
+    
+    parser_expect(parser, `token ;`, c_string "the semicolon ';' after the init in c_for");
+    
+    if not parser_inspect(parser, `token ;`)
+    {
+      stmt.expr_1 = parse_expression(parser, 0);
+      error_assert(c_dbgpos, stmt.expr_1.node_kind != `node binary :`);
+    }
+    
+    parser_expect(parser, `token ;`, c_string "the semicolon ';' after the condition in c_for");
+    
+    if not parser_inspect(parser, `token ;`)
+    {
+      stmt.expr_2 = parse_expression(parser, 0);
+      error_assert(c_dbgpos, stmt.expr_2.node_kind != `node binary :`);
+    }
+    
+    parser_expect(parser, `token ;`, c_string "the semicolon ';' after the reinit in c_for");
+    
+    stmt.stmt_0 = parse_statement(parser);
+    error_assert(c_dbgpos, stmt.stmt_0.node_kind != `node binary :`);
+  }
+  else if parser_accept(parser, `token break`)
+  {
+    stmt = ast_create_node(`node statement break`, parser_at(parser, -1));
+    parser_expect(parser, `token ;`, c_string "the semicolon ';' after the break");
+  }
+  else if parser_accept(parser, `token continue`)
+  {
+    stmt = ast_create_node(`node statement continue`, parser_at(parser, -1));
+    parser_expect(parser, `token ;`, c_string "the semicolon ';' after the continue");
+  }
+  else if parser_accept(parser, `token return`)
+  {
+    stmt = ast_create_node(`node statement return`, parser_at(parser, -1));
+    
+    stmt.expr_0 = parse_expression(parser, 0);
+    error_assert(c_dbgpos, stmt.expr_0.node_kind != `node binary :`);
+    parser_expect(parser, `token ;`, c_string "the semicolon ';' after the return");
+  }
+  else
+  {
+    stmt = parse_expression(parser, 0);
+    parser_expect(parser, `token ;`, c_string "the semicolon ';' after the expression");
+  }
+  
+  debug_assert(c_dbgpos, stmt != null);
+  return stmt;
+}
+
+parser_proceed : (parser: *Parser) -> void
+{
+  debug_assert(c_dbgpos, parser != null);
+  
+  if parser.index < parser.num_tokens  parser.index += 1;
+}
+
+parser_inspect : (parser: *Parser, token_kind: s64) -> *Token
+{
+  debug_assert(c_dbgpos, parser != null);
+  
+  curr : *Token; curr = parser_safe_at(parser, 0);
+  if curr.token_kind != token_kind  return null;
+  
+  return curr;
+}
+
+parser_accept : (parser: *Parser, token_kind: s64) -> *Token
+{
+  debug_assert(c_dbgpos, parser != null);
+  
+  curr : *Token; curr = parser_safe_at(parser, 0);
+  if curr.token_kind != token_kind  return null;
+  
+  parser_proceed(parser);
+  return curr;
+}
+
+parser_expect : (parser: *Parser, token_kind: s64, what: *u8) -> *Token
+{
+  debug_assert(c_dbgpos, parser != null);
+  debug_assert(c_dbgpos, what != null);
+  
+  curr : *Token; curr = parser_safe_at(parser, 0);
+  
+  if curr.token_kind != token_kind
+  {
+    message : *u8; message = arena_get_top(temp_arena);
+    arena_print_cstring(temp_arena, c_string "expected ");
+    arena_print_cstring(temp_arena, what);
+    arena_push(temp_arena, 1);
+    
+    complain(0, curr, message);
+    arena_pop_to_pointer(temp_arena, message);
+  }
+  
+  parser_proceed(parser);
+  return curr;
+}
+
+ast_create_node : (node_kind_opt: s64, token_opt: *Token) -> *Ast_Node
+{
+  arena_push_aligner(keep_arena, alignment_of(Ast_Node));
+  result : *Ast_Node; result = arena_push(keep_arena, size_of(Ast_Node));
+  
+  result.node_kind = node_kind_opt;
+  result.token     = token_opt;
+  
+  return result;
+}
+
+complain : (complain_kind: s64, token_opt: *Token, message: *u8) -> void
+{
+  debug_assert(c_dbgpos, message != null);
+  debug_assert(c_dbgpos, complain_kind < COMPLAIN_ENUM_COUNT);
+  
+  // begin
+  
+  text_arena : *Arena; text_arena = temp_arena;
+  text : *u8; text = arena_get_top(text_arena);
+  
+  row : s64;
+  col : s64;
+  
+  if token_opt
+  {
+    row = 1;
+    col = 1;
+    
+    c_for i: s64; token_opt.file + i != token_opt.at; i += 1;
+    {
+      if token_opt.file[i] == '\n'
+      {
+        row += 1;
+        col = 0;
+      }
+    
+      col += 1;
+    }
+    
+    arena_print_cstring(text_arena, c_string "\1B[93m");
+    arena_print_s64(text_arena, row, 10, 0);
+    arena_print_cstring(text_arena, c_string ":");
+    arena_print_s64(text_arena, col, 10, 0);
+    arena_print_cstring(text_arena, c_string ": ");
+  }
+  
+  kind_as_color   : *u8;
+  kind_as_cstring : *u8;
+  
+  if complain_kind == COMPLAIN_ERROR or complain_kind == COMPLAIN_FATAL_ERROR
+  {
+    kind_as_color   = c_string "\1B[91m";
+    kind_as_cstring = c_string "\1B[91merror:\1B[0m";
+  }
+  else if complain_kind == COMPLAIN_NOTE
+  {
+    kind_as_color   = c_string "\1B[96m";
+    kind_as_cstring = c_string "\1B[96mnote:\1B[0m";
+  }
+  else if complain_kind == COMPLAIN_WARNING
+  {
+    kind_as_color   = c_string "\1B[95m";
+    kind_as_cstring = c_string "\1B[95mwarning:\1B[0m";
+  }
+  
+  arena_print_cstring(text_arena, kind_as_cstring);
+  arena_print_cstring(text_arena, c_string " ");
+  arena_print_cstring(text_arena, message);
+  arena_print_cstring(text_arena, c_string "\n");
+  
+  if token_opt
+  {
+    arena_print_cstring(text_arena, c_string " ");
+    size_0 : s64; size_0 = arena_print_s64(text_arena, row, 10, 0);
+    arena_print_cstring(text_arena, c_string " | ");
+    
+    line : *u8; line = token_opt.at - (col - 1);
+    line_size : s64;
+    
+    while line[line_size] != '\0' and line[line_size] != '\n'
+      line_size += 1;
+    
+    size_1 : s64; size_1 = arena_print_bytes(text_arena, col - 1, line);
+    arena_print_cstring(text_arena, kind_as_color);
+    
+    size_2 : s64; size_2 = arena_print_bytes(text_arena, token_opt.size, token_opt.at);
+    arena_print_cstring(text_arena, c_string "\1B[0m");
+    
+    arena_print_bytes(text_arena, line_size - (size_1 + size_2), line + (size_1 + size_2));
+    
+    arena_print_cstring(text_arena, c_string "\n");
+    arena_print_row(text_arena, size_0 + 2, ' ');
+    arena_print_cstring(text_arena, c_string "|");
+    arena_print_row(text_arena, col, ' ');
+    
+    arena_print_cstring(text_arena, kind_as_color);
+    arena_print_cstring(text_arena, c_string "^");
+    
+    if token_opt.size > 1  arena_print_row(text_arena, token_opt.size - 1, '~');
+    
+    arena_print_cstring(text_arena, c_string "\1B[0m\n");
+  }
+  
+  // end
+  
+  console_error_print_bytes(arena_get_top(text_arena).cast(*u8) - text, text);
+  arena_pop_to_pointer(text_arena, text);
+  
+  if complain_kind == COMPLAIN_FATAL_ERROR  process_exit(1);
+}
+
+parser_tokens_left : (parser: *Parser) -> s64
+{
+  debug_assert(c_dbgpos, parser != null);
+  return parser.num_tokens - parser.index;
+}
+
+parser_at : (parser: *Parser, relative_index: s64) -> *Token
+{
+  debug_assert(c_dbgpos, parser != null);
+
+  absolute_index: s64; absolute_index = parser.index + relative_index;
+  
+  debug_assert(c_dbgpos, absolute_index >= 0);
+  debug_assert(c_dbgpos, absolute_index < parser.num_tokens);
+  
+  return parser.tokens + absolute_index;
+}
+
+parser_safe_at : (parser: *Parser, relative_index: s64) -> *Token
+{
+  debug_assert(c_dbgpos, parser != null);
+  
+  absolute_index: s64; absolute_index = parser.index + relative_index;
+  
+  result : *Token;
+  
+  if absolute_index < 0
+  {
+    result = parser.before_first;
+  }
+  else if absolute_index >= parser.num_tokens
+  {
+    result = parser.after_last;
+  }
+  else
+  {
+    result = parser_at(parser, relative_index);
+  }
+  
+  return result;
+}
+
+c_string_from_node_kind : (node_kind: s64) -> *u8
+{
+  if node_kind == `node invalid`             return c_string "invalid";
+  if node_kind == `node statement root`      return c_string "statement root";
+  if node_kind == `node statement list`      return c_string "statement list";
+  if node_kind == `node statement return`    return c_string "statement return";
+  if node_kind == `node statement break`     return c_string "statement break";
+  if node_kind == `node statement continue`  return c_string "statement continue";
+  if node_kind == `node statement while`     return c_string "statement while";
+  if node_kind == `node statement do-while`  return c_string "statement do-while";
+  if node_kind == `node statement if-else`   return c_string "statement if-else";
+  if node_kind == `node statement c_for`     return c_string "statement c_for";
+  if node_kind == `node primary name`        return c_string "primary name";
+  if node_kind == `node primary null`        return c_string "primary null";
+  if node_kind == `node primary void`        return c_string "primary void";
+  if node_kind == `node primary u64`         return c_string "primary u64";
+  if node_kind == `node primary u32`         return c_string "primary u32";
+  if node_kind == `node primary u16`         return c_string "primary u16";
+  if node_kind == `node primary u8`          return c_string "primary u8";
+  if node_kind == `node primary s64`         return c_string "primary s64";
+  if node_kind == `node primary s32`         return c_string "primary s32";
+  if node_kind == `node primary s16`         return c_string "primary s16";
+  if node_kind == `node primary s8`          return c_string "primary s8";
+  if node_kind == `node primary c_dbgpos`    return c_string "primary c_dbgpos";
+  if node_kind == `node primary integer`     return c_string "primary integer";
+  if node_kind == `node primary character`   return c_string "primary character";
+  if node_kind == `node primary c_string`    return c_string "primary c_string";
+  if node_kind == `node unary +`             return c_string "unary +";
+  if node_kind == `node unary -`             return c_string "unary -";
+  if node_kind == `node unary ^`             return c_string "unary ^";
+  if node_kind == `node unary *`             return c_string "unary *";
+  if node_kind == `node unary not`           return c_string "unary not";
+  if node_kind == `node unary size_of`       return c_string "unary size_of";
+  if node_kind == `node unary alignment_of`  return c_string "unary alignment_of";
+  if node_kind == `node unary .*`            return c_string "unary .*";
+  if node_kind == `node unary .&`            return c_string "unary .&";
+  if node_kind == `node binary :`            return c_string "binary :";
+  if node_kind == `node binary +`            return c_string "binary +";
+  if node_kind == `node binary -`            return c_string "binary -";
+  if node_kind == `node binary *`            return c_string "binary *";
+  if node_kind == `node binary /`            return c_string "binary /";
+  if node_kind == `node binary %`            return c_string "binary %";
+  if node_kind == `node binary &`            return c_string "binary &";
+  if node_kind == `node binary ^`            return c_string "binary ^";
+  if node_kind == `node binary |`            return c_string "binary |";
+  if node_kind == `node binary <<`           return c_string "binary <<";
+  if node_kind == `node binary >>`           return c_string "binary >>";
+  if node_kind == `node binary .`            return c_string "binary .";
+  if node_kind == `node binary ==`           return c_string "binary ==";
+  if node_kind == `node binary !=`           return c_string "binary !=";
+  if node_kind == `node binary <=`           return c_string "binary <=";
+  if node_kind == `node binary >=`           return c_string "binary >=";
+  if node_kind == `node binary <`            return c_string "binary <";
+  if node_kind == `node binary >`            return c_string "binary >";
+  if node_kind == `node binary index`        return c_string "binary index";
+  if node_kind == `node binary and`          return c_string "binary and";
+  if node_kind == `node binary or`           return c_string "binary or";
+  if node_kind == `node binary =`            return c_string "binary =";
+  if node_kind == `node binary +=`           return c_string "binary +=";
+  if node_kind == `node binary -=`           return c_string "binary -=";
+  if node_kind == `node binary *=`           return c_string "binary *=";
+  if node_kind == `node binary /=`           return c_string "binary /=";
+  if node_kind == `node binary %=`           return c_string "binary %=";
+  if node_kind == `node binary &=`           return c_string "binary &=";
+  if node_kind == `node binary ^=`           return c_string "binary ^=";
+  if node_kind == `node binary |=`           return c_string "binary |=";
+  if node_kind == `node binary <<=`          return c_string "binary <<=";
+  if node_kind == `node binary >>=`          return c_string "binary >>=";
+  if node_kind == `node binary cast`         return c_string "binary cast";
+  if node_kind == `node function type`       return c_string "function type";
+  if node_kind == `node function call`       return c_string "function call";
+  if node_kind == `node struct`              return c_string "struct";
+  if node_kind == `node c_enum`              return c_string "c_enum";
+  
+  return c_string "UNKNOWN NODE KIND!!!!!!!!!!!!!!!!!!!!!!";
+}
+
+//-------------------------------------------------------------------------------------------------
+// utils.cye
+//-------------------------------------------------------------------------------------------------
+
+// integers:
+
+s64_align : (number: s64, alignment: s64) -> s64
+{
+  debug_assert(c_dbgpos, alignment >= 1);
+  
+  remainder : s64;
+  remainder = number % alignment;
+  
+  if remainder == 0
+    return number;
+  
+  return number + alignment - remainder;
+}
+
+s64_max : (a: s64, b: s64) -> s64
+{
+  if a > b  return a;
+  else      return b;
+}
+
+s64_min : (a: s64, b: s64) -> s64
+{
+  if a < b  return a;
+  else      return b;
+}
+
+u64_max : (a: u64, b: u64) -> u64
+{
+  if a > b  return a;
+  else      return b;
+}
+
+u64_min : (a: u64, b: u64) -> u64
+{
+  if a < b  return a;
+  else      return b;
+}
+
+// string.h equivalent
+
+memory_set_every_byte_to_value : (a: *void, value: u32, size: s64) -> void
+{
+  debug_assert(c_dbgpos, size >= 0);
+  debug_assert(c_dbgpos, value <= 0xFF);
+  debug_assert(c_dbgpos, size == 0 or a != null);
+  
+  c_for i : s64; i < size; i += 1;
+    a.cast(*u8)[i] = value;
+}
+
+memory_zero : (a: *void, size: s64) -> void
+{
+  debug_assert(c_dbgpos, size >= 0);
+  debug_assert(c_dbgpos, size == 0 or a != null);
+  
+  memory_set_every_byte_to_value(a, 0, size);
+}
+
+memory_move : (dst: *void, src: *void, size: s64) -> void
+{
+  debug_assert(c_dbgpos, size >= 0);
+  debug_assert(c_dbgpos, size == 0 or dst != null);
+  debug_assert(c_dbgpos, size == 0 or src != null);
+  
+  dst_bytes : *u8;
+  dst_bytes = dst;
+  
+  src_bytes : *u8;
+  src_bytes = src;
+  
+  if dst.cast(s64) <= src.cast(s64)
+  {
+    c_for i : s64; i < size; i += 1;
+      dst_bytes[i] = src_bytes[i];
+  }
+  else
+  {
+    c_for i : s64; i < size; i += 1;
+    {
+      ri : s64; ri = size - 1 - i;
+      dst_bytes[ri] = src_bytes[ri];
+    }
+  }
+}
+
+memory_equal : (a: *void, b: *void, size: s64) -> u32
+{
+  debug_assert(c_dbgpos, size >= 0);
+  debug_assert(c_dbgpos, size == 0 or a != null);
+  debug_assert(c_dbgpos, size == 0 or b != null);
+  
+  c_for i : s64; i < size; i += 1;
+    if a.cast(*u8)[i] != b.cast(*u8)[i]
+      return 0;
+  
+  return 1;
+}
+
+memory_copy : (dst: *void, src: *void, size: s64) -> void
+{
+  debug_assert(c_dbgpos, size >= 0);
+  debug_assert(c_dbgpos, size == 0 or dst != null);
+  debug_assert(c_dbgpos, size == 0 or src != null);
+  
+  c_for i : s64; i < size; i += 1;
+    dst.cast(*u8)[i] = src.cast(*u8)[i];
+}
+
+cstring_length : (s: *u8) -> s64
+{
+  debug_assert(c_dbgpos, s != null);
+  
+  s0 : *u8; s0 = s;
+  
+  while s.* != '\0'  s += 1;
+  
+  return s - s0;
+}
+
+// ctype.h equivalent
+
+ascii_digit_from_int : (number: s64) -> u32
+{
+  debug_assert(c_dbgpos, number >= 0);
+  debug_assert(c_dbgpos, number < 16);
+  
+  if number < 10  return number + '0';
+  
+  return 'A' - 10 + number;
+}
+
+ascii_digit_to_int : (c: u32) -> s64
+{
+  if 'A' <= c and c <= 'F'  return c - 'A' + 10;
+  if 'a' <= c and c <= 'f'  return c - 'a' + 10;
+  if '0' <= c and c <= '9'  return c - '0';
+  
+  return 100;
+}
+
+ascii_is_space : (c: u64) -> u64
+{
+  return c == ' ' or c == '\n';
+}
+
+ascii_is_letter : (c: u64) -> u64
+{
+  return 'A' <= c and c <= 'Z'
+      or 'a' <= c and c <= 'z';
+}
+
+ascii_is_letter_or_digit : (c: u64) -> u64
+{
+  return 'A' <= c and c <= 'Z'
+      or 'a' <= c and c <= 'z'
+      or '0' <= c and c <= '9';
+}
+
+ascii_is_decimal_digit : (c: u64) -> u64
+{
+  return '0' <= c and c <= '9';
+}
+
+ascii_is_uppercase_hexadecimal_digit : (c: u64) -> u64
+{
+  return 'A' <= c and c <= 'F'
+      or '0' <= c and c <= '9';
+}
+
+// assert.h equivalent
+
+debug_assert : (dbgpos: *u8, _true: u32) -> void
+{
+  if not _true
+    say_and_die(c_string "debug_assert FAILED\n", dbgpos);
+}
+
+resource_assert : (dbgpos: *u8, _true: u32) -> void
+{
+  if not _true
+    say_and_die(c_string "resource_assert FAILED\n", dbgpos);
+}
+
+error_assert : (dbgpos: *u8, _true: u32) -> void
+{
+  if not _true
+    say_and_die(c_string "error_assert FAILED\n", dbgpos);
+}
+
+//-------------------------------------------------------------------------------------------------
+// arena.cye
+//-------------------------------------------------------------------------------------------------
+
+// Arena Print:
+
+arena_print_bytes : (arena: *Arena, size: s64, data: *void) -> s64
+{
+  debug_assert(c_dbgpos, arena != null);
+  debug_assert(c_dbgpos, arena.at != null);
+  debug_assert(c_dbgpos, arena.pushed >= 0);
+  debug_assert(c_dbgpos, arena.commited >= 0);
+  debug_assert(c_dbgpos, arena.reserved >= 0);
+  debug_assert(c_dbgpos, size >= 0);
+  debug_assert(c_dbgpos, data != null or size == 0);
+  
+  arena_push_copy(arena, size, data);
+  
+  return size;
+}
+
+arena_print_cstring : (arena: *Arena, cstring: *u8) -> s64
+{
+  debug_assert(c_dbgpos, arena != null);
+  debug_assert(c_dbgpos, arena.at != null);
+  debug_assert(c_dbgpos, arena.pushed >= 0);
+  debug_assert(c_dbgpos, arena.commited >= 0);
+  debug_assert(c_dbgpos, arena.reserved >= 0);
+  debug_assert(c_dbgpos, cstring != null);
+  
+  return arena_print_bytes(arena, cstring_length(cstring), cstring);
+}
+
+arena_print_row : (arena: *Arena, size: s64, ch: u32) -> s64
+{
+  debug_assert(c_dbgpos, arena != null);
+  debug_assert(c_dbgpos, arena.at != null);
+  debug_assert(c_dbgpos, arena.pushed >= 0);
+  debug_assert(c_dbgpos, arena.commited >= 0);
+  debug_assert(c_dbgpos, arena.reserved >= 0);
+  debug_assert(c_dbgpos, size >= 0);
+  debug_assert(c_dbgpos, ch <= 0xFF);
+  
+  bytes : *void;
+  bytes = arena_push(arena, size);
+  memory_set_every_byte_to_value(bytes, ch, size);
+  
+  return size;
+}
+
+arena_print_u64 : (arena: *Arena, number: u64, base: u64, min_length: s64) -> s64
+{
+  debug_assert(c_dbgpos, arena != null);
+  debug_assert(c_dbgpos, arena.at != null);
+  debug_assert(c_dbgpos, arena.pushed >= 0);
+  debug_assert(c_dbgpos, arena.commited >= 0);
+  debug_assert(c_dbgpos, arena.reserved >= 0);
+  debug_assert(c_dbgpos, base >= 2);
+  debug_assert(c_dbgpos, base <= 16);
+  debug_assert(c_dbgpos, min_length >= 0);
+
+  size : s64;
+  
+  ndigits : s64; ndigits = 1;
+  copy    : u64; copy    = number / base;
+  
+  while copy > 0
+  {
+    ndigits += 1;
+    copy /= base;
+  }
+  
+  if ndigits < min_length
+  {
+    arena_print_row(arena, min_length - ndigits, '0');
+    size = min_length;
+  }
+  else
+  {
+    size = ndigits;
+  }
+  
+  chars : *u8; chars = arena_push(arena, ndigits);
+  
+  c_for i : s64; i < ndigits; i += 1;
+  {
+    ri : s64; ri = ndigits - 1 - i;
+    
+    chars[ri] = ascii_digit_from_int(number % base);
+    number /= base;
+  }
+  
+  return size;
+}
+
+arena_print_s64 : (arena: *Arena, number: s64, base: u64, min_length: s64) -> s64
+{
+  debug_assert(c_dbgpos, arena != null);
+  debug_assert(c_dbgpos, arena.at != null);
+  debug_assert(c_dbgpos, arena.pushed >= 0);
+  debug_assert(c_dbgpos, arena.commited >= 0);
+  debug_assert(c_dbgpos, arena.reserved >= 0);
+  debug_assert(c_dbgpos, base >= 2);
+  debug_assert(c_dbgpos, base <= 16);
+  debug_assert(c_dbgpos, min_length >= 0);
+  
+  result : s64;
+  
+  if number < 0
+  {
+    result += 1;
+    number *= -1;
+    min_length = s64_max(0, min_length - 1);
+  }
+  
+  result += arena_print_u64(arena, number, base, min_length);
+  
+  return result;
+}
+
+arena_print_cyechar : (arena: *Arena, cyechar: u64) -> s64
+{
+  debug_assert(c_dbgpos, arena != null);
+  debug_assert(c_dbgpos, arena.at != null);
+  debug_assert(c_dbgpos, arena.pushed >= 0);
+  debug_assert(c_dbgpos, arena.commited >= 0);
+  debug_assert(c_dbgpos, arena.reserved >= 0);
+  
+  max_length : s64;
+  
+  c_for i : s64; i < size_of(u64); i += 1;
+    if cyechar >> (i * 8) & 0xFF != 0
+      max_length = i + 1;
+  
+  chars : *u8; chars = arena_push(arena, max_length);
+  
+  c_for i : s64; i < max_length; i += 1;
+    chars[i] = cyechar >> (i * 8) & 0xFF;
+  
+  return max_length;
+}
+
+// Arena
+
+arena_create : (min_reserved: s64) -> *Arena
+{
+  debug_assert(c_dbgpos, min_reserved >= 0);
+  debug_assert(c_dbgpos, min_reserved < 1.cast(s64) << 40); // TODO: no cast
+
+  one_page : s64;
+  reserved : s64;
+  commited : s64;
+  
+  one_page = 0x1000;
+  reserved = one_page;
+  commited = one_page;
+  
+  while reserved < min_reserved  reserved *= 2;
+  
+  true_reserved : s64;
+  true_commited : s64;
+  
+  true_reserved = one_page + reserved;
+  true_commited = one_page + commited;
+  
+  p_0 : *void; p_0 = system_memory_reserve(true_reserved);
+  resource_assert(c_dbgpos, p_0 != null);
+  
+  err : u32; err = system_memory_commit(true_commited, p_0);
+  resource_assert(c_dbgpos, err == 0);
+
+  arena : *Arena; arena = p_0;
+
+  arena.at       = p_0.cast(*u8) + one_page;
+  arena.reserved = reserved;
+  arena.commited = commited;
+  arena.pushed   = 0;
+
+  debug_assert(c_dbgpos, arena != null);
+  return arena;
+}
+
+arena_get_top : (arena: *Arena) -> *void
+{
+  debug_assert(c_dbgpos, arena != null);
+  debug_assert(c_dbgpos, arena.at != null);
+  debug_assert(c_dbgpos, arena.pushed >= 0);
+  return arena.at + arena.pushed;
+}
+
+arena_push_uninited : (arena: *Arena, size: s64) -> *void
+{
+  debug_assert(c_dbgpos, arena != null);
+  debug_assert(c_dbgpos, arena.at != null);
+  debug_assert(c_dbgpos, arena.pushed >= 0);
+  debug_assert(c_dbgpos, arena.commited >= 0);
+  debug_assert(c_dbgpos, arena.reserved >= 0);
+  debug_assert(c_dbgpos, size >= 0);
+  
+  result : *void; result = arena_get_top(arena);
+  
+  arena.pushed += size;
+  
+  while arena.commited < arena.pushed
+  {
+    commited : s64;
+    new_half : *void;
+    
+    commited = arena.commited;
+    new_half = arena.at + commited;
+    
+    arena.commited *= 2;
+    resource_assert(c_dbgpos, arena.commited <= arena.reserved);
+    
+    err : u32; err = system_memory_commit(commited, new_half);
+    resource_assert(c_dbgpos, err == 0);
+  }
+  
+  debug_assert(c_dbgpos, result != null);
+  return result;
+}
+
+arena_push : (arena: *Arena, size: s64) -> *void
+{
+  debug_assert(c_dbgpos, arena != null);
+  debug_assert(c_dbgpos, arena.at != null);
+  debug_assert(c_dbgpos, arena.pushed >= 0);
+  debug_assert(c_dbgpos, arena.commited >= 0);
+  debug_assert(c_dbgpos, arena.reserved >= 0);
+  debug_assert(c_dbgpos, size >= 0);
+  
+  result : *void; result = arena_push_uninited(arena, size);
+  memory_zero(result, size);
+  
+  debug_assert(c_dbgpos, result != null);
+  return result;
+}
+
+arena_push_aligner : (arena: *Arena, alignment: s64) -> void
+{
+  debug_assert(c_dbgpos, arena != null);
+  debug_assert(c_dbgpos, arena.at != null);
+  debug_assert(c_dbgpos, arena.pushed >= 0);
+  debug_assert(c_dbgpos, arena.commited >= 0);
+  debug_assert(c_dbgpos, arena.reserved >= 0);
+  debug_assert(c_dbgpos, alignment >= 1);
+  
+  remainder : s64; remainder = arena.pushed % alignment;
+  
+  if remainder != 0  arena_push(arena, alignment - remainder);
+}
+
+arena_push_copy : (arena: *Arena, size: s64, data: *void) -> *void
+{
+  debug_assert(c_dbgpos, arena != null);
+  debug_assert(c_dbgpos, arena.at != null);
+  debug_assert(c_dbgpos, arena.pushed >= 0);
+  debug_assert(c_dbgpos, arena.commited >= 0);
+  debug_assert(c_dbgpos, arena.reserved >= 0);
+  debug_assert(c_dbgpos, size >= 0);
+  debug_assert(c_dbgpos, data != null or size == 0);
+  
+  result : *void; result = arena_push_uninited(arena, size);
+  memory_copy(result, data, size);
+  
+  debug_assert(c_dbgpos, result != null);
+  return result;
+}
+
+arena_pop_to_pointer : (arena: *Arena, pointer: *void) -> void
+{
+  debug_assert(c_dbgpos, arena != null);
+  debug_assert(c_dbgpos, arena.at != null);
+  debug_assert(c_dbgpos, arena.pushed >= 0);
+  debug_assert(c_dbgpos, arena.commited >= 0);
+  debug_assert(c_dbgpos, arena.reserved >= 0);
+  debug_assert(c_dbgpos, pointer != null);
+  
+  new_pushed : s64; new_pushed = pointer.cast(*u8) - arena.at;
+  
+  debug_assert(c_dbgpos, new_pushed >= 0);
+  debug_assert(c_dbgpos, new_pushed <= arena.pushed);
+  
+  arena.pushed = new_pushed;
+}
+
+//-------------------------------------------------------------------------------------------------
+//
+//
+// NOTE: nothing above this comment should use Windows API directly
+//
+//
+//-------------------------------------------------------------------------------------------------
+
+//-------------------------------------------------------------------------------------------------
+// os_api.cye
+//-------------------------------------------------------------------------------------------------
+
+// system memory:
+
+system_memory_commit : (size: s64, base: *void) -> u32
+{
+  pointer : *void; pointer = w_VirtualAlloc(base, size, 0x00001000, 0x04); // MEM_COMMIT, PAGE_READWRITE
+  
+  return pointer == null;
+}
+
+system_memory_reserve : (size: s64) -> *void
+{
+  debug_assert(c_dbgpos, size >= 0);
+  
+  result : *void; result = w_VirtualAlloc(null, size, 0x00002000, 0x04); // MEM_RESERVE, PAGE_READWRITE
+  
+  return result;
+}
+
+// misc.
+
+get_w_stderr : () -> *void
+{
+  return w_GetStdHandle(-12); // -12 means stderr
+}
+
+say_and_die : (msg: *u8, dbgpos: *u8) -> void
+{
+  f : *void; f = get_w_stderr();
+
+  w_WriteFile(f, msg, cstring_length(msg), null, null);
+  w_WriteFile(f, dbgpos, cstring_length(dbgpos), null, null);
+  w_WriteFile(f, c_string "\n", 1, null, null);
+  w_ExitProcess(1);
+}
+
+// CLI:
+
+command_get_arguments : (result_arena: *Arena, temp_arena: *Arena) -> **u8
+{
+  debug_assert(c_dbgpos, result_arena != null);
+  debug_assert(c_dbgpos, result_arena.at != null);
+  debug_assert(c_dbgpos, result_arena.pushed >= 0);
+  debug_assert(c_dbgpos, result_arena.commited >= 0);
+  debug_assert(c_dbgpos, result_arena.reserved >= 0);
+  debug_assert(c_dbgpos, temp_arena != null);
+  debug_assert(c_dbgpos, temp_arena.at != null);
+  debug_assert(c_dbgpos, temp_arena.pushed >= 0);
+  debug_assert(c_dbgpos, temp_arena.commited >= 0);
+  debug_assert(c_dbgpos, temp_arena.reserved >= 0);
+  debug_assert(c_dbgpos, result_arena != temp_arena);
+  
+  num_arguments : s64;
+  
+  command_line : *u8; command_line = w_GetCommandLineA();
+  
+  cp : *u8; cp = command_line;
+  
+  temp_arena_beg : *u8; temp_arena_beg = arena_get_top(temp_arena);
+  
+  while cp.* != '\0'
+  {
+    while cp.* == ' '  cp += 1;
+    
+    argument_beg : *u8;
+    argument_end : *u8;
+    
+    argument_beg = cp;
+    
+    while cp.* != ' ' and cp.* != '\0'   cp += 1;
+    
+    argument_end = cp;
+    
+    argument_size : s64; argument_size = argument_end - argument_beg;
+    
+    argument_value : *u8; argument_value = arena_push_copy(result_arena, argument_size, argument_beg);
+    arena_push(result_arena, 1);
+    
+    arena_push_copy(temp_arena, 8, argument_value.&);
+    
+    num_arguments += 1;
+  }
+  
+  arena_push_aligner(result_arena, alignment_of(*u8));
+  result : **u8; result = arena_push_copy(result_arena, num_arguments * size_of(*u8), temp_arena_beg);
+  arena_push(result_arena, size_of(*u8));
+  
+  arena_pop_to_pointer(temp_arena, temp_arena_beg);
+  return result + 1;
+}
+
+// File IO:
+
+file_read_all_bytes : (cpath: *u8, result_arena: *Arena) -> *void
+{
+  debug_assert(c_dbgpos, cpath != null);
+  debug_assert(c_dbgpos, result_arena != null);
+  debug_assert(c_dbgpos, result_arena.at != null);
+  debug_assert(c_dbgpos, result_arena.pushed >= 0);
+  debug_assert(c_dbgpos, result_arena.commited >= 0);
+  debug_assert(c_dbgpos, result_arena.reserved >= 0);
+  
+  result : *void;
+  
+  file_handle : *void;
+  file_handle = w_CreateFileA(cpath, 0x80000000, 0, null, 3, 128, null); // GENERIC_READ, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL
+  
+  if file_handle != (^(0.cast(u64))).cast(*void) // INVALID_HANDLE_VALUE // TODO: remove .cast(u64)
+  {
+    file_size : u32; file_size = w_GetFileSize(file_handle, null);
+    
+    valid_file_size : s64;
+    
+    if file_size != 0xFFFFFFFF
+      valid_file_size = file_size;
+    
+    file_content : *u8; file_content = arena_push(result_arena, valid_file_size);
+    
+    ok_0 : s32;
+    ok_1 : s32;
+    ok_2 : s32;
+    
+    file_size_out : u32;
+    ok_0 = w_ReadFile(file_handle, file_content, valid_file_size, file_size_out.&, null);
+    ok_1 = (valid_file_size == file_size_out);
+    ok_2 = w_CloseHandle(file_handle);
+    
+    if ok_0 and ok_1 and ok_2   result = file_content;
+    else                        arena_pop_to_pointer(result_arena, file_content);
+  }
+  
+  return result;
+}
+
+file_write_all_bytes : (cpath: *u8, size: s64, data: *void) -> u32
+{
+  debug_assert(c_dbgpos, cpath != null);
+  debug_assert(c_dbgpos, size >= 0);
+  debug_assert(c_dbgpos, size < 0x10000000);
+  debug_assert(c_dbgpos, data != null or size == 0);
+
+  result : u32;
+  
+  file_handle : *void;
+  file_handle = w_CreateFileA(cpath, 0x40000000, 0, null, 2, 128, null); // GENERIC_WRITE, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL
+  
+  if file_handle != (^(0.cast(u64))).cast(*void) // INVALID_HANDLE_VALUE // TODO: remove .cast(u64)
+  {
+    ok_0 : s32;
+    ok_1 : s32;
+    
+    ok_0 = w_WriteFile(file_handle, data, size, null, null);
+    ok_1 = w_CloseHandle(file_handle);
+    
+    result = (ok_0 and ok_1);
+  }
+  
+  return result;
+}
+
+// stdlib.h equivalent
+
+process_exit : (status: u32) -> void
+{
+  w_ExitProcess(status);
+}
+
+// stdio.h not really an equivalent
+
+console_error_print_bytes : (size: s64, data: *void) -> void
+{
+  debug_assert(c_dbgpos, size >= 0);
+  debug_assert(c_dbgpos, data != null or size == 0);
+  
+  w_WriteFile(w_stderr, data, size, null, null);
+}
+
+console_error_print_cstring : (cstring: *u8) -> void
+{
+  debug_assert(c_dbgpos, cstring != null);
+  
+  console_error_print_bytes(cstring_length(cstring), cstring);
+}
+
+console_init : () -> void
+{
+  w_stderr = get_w_stderr();
+  
+  prev_mode : u32;
+  ok_0 : s32; ok_0 = w_GetConsoleMode(w_stderr, prev_mode.&);
+  resource_assert(c_dbgpos, ok_0);
+  
+  ok_1 : s32; ok_1 = w_SetConsoleMode(w_stderr, prev_mode | 4); // enabling virtual terminal mode
+  resource_assert(c_dbgpos, ok_1);
+}
+
+// windows.h (kernel32.dll functions ONLY):
+
+w_stderr : *void;
+
+c_extern c_name GetConsoleMode
+w_GetConsoleMode : (console_handle: *void, mode_flags_out: *u32) -> s32;
+
+c_extern c_name SetConsoleMode
+w_SetConsoleMode : (console_handle: *void, mode_flags: u32) -> s32;
+
+c_extern c_name GetStdHandle
+w_GetStdHandle : (std_handle: s32) -> *void;
+
+c_extern c_name WriteFile
+w_WriteFile : (file_handle: *void, data: *void, size: u32, size_out_opt: *u32, overlapped_in_out_opt: *void) -> s32;
+
+c_extern c_name ExitProcess
+w_ExitProcess : (status: u32) -> void;
+
+c_extern c_name GetCommandLineA
+w_GetCommandLineA : () -> *u8;
+
+c_extern c_name ReadFile
+w_ReadFile : (file_handle: *void, data_out: *void, size: u32, size_out: *u32, overlapped_in_out_opt: *void) -> s32;
+
+c_extern c_name VirtualAlloc
+w_VirtualAlloc : (base: *void, size: u64, allocation_flags: u32, protect_flags: u32) -> *void;
+
+c_extern c_name CreateFileA
+w_CreateFileA : (cpath: *u8, access: u32, share: u32, security_opt: *void, disposition: u32, flags: u32, template_opt: *void) -> *void;
+
+c_extern c_name CloseHandle
+w_CloseHandle : (handle: *void) -> s32;
+
+c_extern c_name GetFileSize
+w_GetFileSize : (file_handle: *void, size_most_significant_part_out_opt: *u32) -> u32;
+
+

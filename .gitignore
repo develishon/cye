@@ -1,0 +1,16 @@
+
+# Binary files
+*.exe
+*.elf
+*.o
+*.obj
+*.bin
+
+# Auto-generated C
+cye.c
+a.c
+b.c
+output.c
+test.c
+
+

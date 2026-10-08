@@ -1,0 +1,33 @@
+// 001_print_text.cye - print ASCII characters on Windows
+
+main : () -> void
+{
+  console_init();
+  
+  w_WriteFile(w_stderr, c_string "Hello, \1B[96mWorld\1B[0m!\n", 24, null, null);
+}
+
+w_stderr : *void;
+
+console_init : () -> void
+{
+  w_stderr = w_GetStdHandle(-12);
+  
+  prev_mode : u32;
+  w_GetConsoleMode(w_stderr, prev_mode.&);
+  w_SetConsoleMode(w_stderr, prev_mode | 4); // enable virtual terminal mode
+}
+
+c_extern c_name GetConsoleMode
+w_GetConsoleMode : (console_handle: *void, mode_flags_out: *u32) -> s32;
+
+c_extern c_name SetConsoleMode
+w_SetConsoleMode : (console_handle: *void, mode_flags: u32) -> s32;
+
+c_extern c_name GetStdHandle
+w_GetStdHandle : (std_handle: s32) -> *void;
+
+c_extern c_name WriteFile
+w_WriteFile : (file_handle: *void, data: *void, size: u32, size_out_opt: *u32, overlapped_in_out_opt: *void) -> s32;
+
+

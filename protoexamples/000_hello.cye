@@ -1,0 +1,11 @@
+// 000_hello.cye - Hello, World! program on Windows
+
+main : () -> void
+{
+  w_MessageBoxA(null, c_string "Hello, World!", c_string "Message", 0);
+}
+
+c_extern c_name MessageBoxA
+w_MessageBoxA : (window_opt: *void, text: *u8, title: *u8, type: u32) -> s32;
+
+
