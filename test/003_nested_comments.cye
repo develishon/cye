@@ -1,0 +1,13 @@
+// 003_nested_comments.cye
+
+main : () -> void
+{
+  /*
+      /* x : u64; */
+  
+  x = 42;
+    
+  */
+}
+
+

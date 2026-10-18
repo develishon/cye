@@ -43,4 +43,10 @@ of the software. All contribution attempts are going to be met with a LOT of ske
 
 The MIT License.
 
+## AI?
+
+I don't use those fancy random-nonsense generators.
+
+I don't participate in source code gambling.
+
 

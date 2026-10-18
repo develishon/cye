@@ -4,7 +4,7 @@ main : () -> void
 {
   console_init();
   
-  w_WriteFile(w_stderr, c_string "Hello, \1B[96mWorld\1B[0m!\n", 24, null, null);
+  w_WriteFile(w_stderr, "Hello, \1B[96mWorld\1B[0m!\n\0".at, 24, null, null);
 }
 
 w_stderr : *void;

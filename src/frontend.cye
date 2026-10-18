@@ -1,0 +1,1451 @@
+// frontend.cye
+
+builtin_type_u8     : *Type;
+builtin_type_u16    : *Type;
+builtin_type_u32    : *Type;
+builtin_type_u64    : *Type;
+builtin_type_s8     : *Type;
+builtin_type_s16    : *Type;
+builtin_type_s32    : *Type;
+builtin_type_s64    : *Type;
+builtin_type_void   : *Type;
+builtin_type_string : *Type;
+builtin_type_ptr_to_void   : *Type;
+builtin_type_ptr_to_u8     : *Type;
+
+c_enum // Symbol.storage
+{
+  STORAGE_UNDEFINED;
+  STORAGE_STATIC;
+  STORAGE_EXTERN;
+  STORAGE_LOCAL;
+  STORAGE_C_TYPEDEF;
+  STORAGE_C_ENUM;
+}
+
+c_enum // Type.type_kind
+{
+  TYPE_INVALID;
+  TYPE_S64;
+  TYPE_S32;
+  TYPE_S16;
+  TYPE_S8;
+  TYPE_U64;
+  TYPE_U32;
+  TYPE_U16;
+  TYPE_U8;
+  TYPE_VOID;
+  TYPE_POINTER_TO;
+  TYPE_FUNCTION;
+  TYPE_STRUCT;
+}
+
+c_typedef Type : struct
+{
+  type_kind : s64;
+  debug_token : *Token;
+  
+  c89_struct_name : String;
+  
+  sub_type : *Type;
+  
+  num_params : s64;
+  params     : *Name_And_Type;
+  
+  num_members : s64;
+  members     : *Name_And_Type;
+};
+
+c_typedef Name_And_Type : struct
+{
+  name     : String;
+  c89_name : String;
+  type     : *Type;
+};
+
+c_typedef Symbol : struct
+{
+  name_token      : *Token;
+  type            : *Type;
+  ast_node        : *Ast_Node;
+  c89_name        : String;
+  storage         : s64; // defined when constructing the scope tree (as early as possible)
+  local_is_active : u64; // STORAGE_LOCAL only
+  num_uses        : s64;
+  c_enum_value    : s64; // STORAGE_C_ENUM only
+  
+  // STORAGE_C_TYPEDEF:
+  definition_index : s64;
+  visit_id         : s64;
+};
+
+g_next_definition_index : s64;
+g_next_visit_id      : s64;
+
+c_typedef Scope : struct
+{
+  symbols     : **Symbol;
+  num_symbols : s64;
+  parent      : *Scope;
+};
+
+c_typedef Expr_Value : struct
+{
+  token        : *Token;
+  type         : *Type;
+  as_u64       : u64;
+  as_string    : String;
+  is_lvalue    : u64;
+  is_constexpr : u64;
+  member_ref   : *Name_And_Type;
+};
+
+type_alignment_of : (type: *Type) -> s64
+{
+  debug_assert(__dbgpos, type != null);
+  
+  the_kind : s64; the_kind = type.type_kind;
+  
+  if the_kind == TYPE_POINTER_TO                   return 8;
+  if the_kind == TYPE_U64 or the_kind == TYPE_S64  return 8;
+  if the_kind == TYPE_U32 or the_kind == TYPE_S32  return 4;
+  if the_kind == TYPE_U16 or the_kind == TYPE_S16  return 2;
+  if the_kind == TYPE_U8  or the_kind == TYPE_S8   return 1;
+  
+  if the_kind == TYPE_STRUCT
+  {
+    struct_alignment : s64; struct_alignment = 1;
+    
+    c_for i: s64; i < type.num_members; i += 1;
+    {
+      member: Name_And_Type; member = type.members[i];
+      
+      member_alignment : s64; member_alignment = type_alignment_of(member.type);
+      
+      if member_alignment > struct_alignment  struct_alignment = member_alignment;
+    }
+    
+    return struct_alignment;
+  }
+  
+  if type.debug_token  complain(0, type.debug_token, "can't compute type_alignment_of");
+  debug_assert(__dbgpos, 0);
+  return 0;
+}
+
+type_size_of : (type: *Type) -> s64
+{
+  debug_assert(__dbgpos, type != null);
+  
+  the_kind : s64; the_kind = type.type_kind;
+  
+  if the_kind == TYPE_POINTER_TO                   return 8;
+  if the_kind == TYPE_U64 or the_kind == TYPE_S64  return 8;
+  if the_kind == TYPE_U32 or the_kind == TYPE_S32  return 4;
+  if the_kind == TYPE_U16 or the_kind == TYPE_S16  return 2;
+  if the_kind == TYPE_U8  or the_kind == TYPE_S8   return 1;
+  
+  if the_kind == TYPE_STRUCT
+  {
+    struct_size : s64;
+    struct_alignment : s64; struct_alignment = 1;
+    
+    c_for i: s64; i < type.num_members; i += 1;
+    {
+      member: Name_And_Type; member = type.members[i];
+      
+      member_alignment : s64; member_alignment = type_alignment_of(member.type);
+      
+      if member_alignment > struct_alignment  struct_alignment = member_alignment;
+      
+      struct_size = s64_align(struct_size, member_alignment);
+      struct_size += type_size_of(member.type);
+    }
+    
+    struct_size = s64_align(struct_size, struct_alignment);
+    return struct_size;
+  }
+  
+  if type.debug_token complain(0, type.debug_token, "can't compute type_size_of");
+  debug_assert(__dbgpos, 0);
+  return 0;
+}
+
+type_explicit_cast_is_possible : (dst: *Type, src: *Type) -> u64
+{
+  if dst.type_kind == TYPE_FUNCTION or dst.type_kind == TYPE_STRUCT  return 0;
+  
+  return 1;
+}
+
+bytes_from_extended_text : (length: s64, text: *u8, result_arena: *Arena) -> s64
+{
+  size : s64;
+  
+  c_for ti: s64; ti < length; ti += 1;
+  {
+    byte_value: u8;
+    
+    if text[ti] == '\\'
+    {
+      ti += 1;
+      debug_assert(__dbgpos, ti < length);
+      
+           if text[ti] == '\\'  byte_value = '\\';
+      else if text[ti] == '"'   byte_value = '"';
+      else if text[ti] == '\''  byte_value = '\'';
+      else if text[ti] == '`'   byte_value = '`';
+      else if text[ti] == 'n'   byte_value = '\n';
+      else
+      {
+        debug_assert(__dbgpos, ascii_is_uppercase_hexadecimal_digit(text[ti]));
+        
+        d0 : u64;
+        d1 : u64;
+        
+        if ti + 1 < length and ascii_is_uppercase_hexadecimal_digit(text[ti + 1])
+        {
+          d0 = ascii_digit_to_int(text[ti + 0]);
+          d1 = ascii_digit_to_int(text[ti + 1]);
+          ti += 1;
+        }
+        else
+        {
+          d1 = ascii_digit_to_int(text[ti + 0]);
+        }
+        
+        debug_assert(__dbgpos, d0 < 16);
+        debug_assert(__dbgpos, d1 < 16);
+        byte_value = d0 << 4 | d1;
+      }
+    }
+    else
+    {
+      byte_value = text[ti];
+    }
+    
+    arena_push_copy(result_arena, size_of(u8), byte_value.&);
+    size += 1;
+  }
+  
+  return size;
+}
+
+language_frontend : (input_files: String_Array) -> *Ast_Node
+{
+  debug_assert(__dbgpos, input_files.count != 0);
+
+  root : *Ast_Node; root = ast_create_node(`node statement root`, null);
+  {
+    global_nodes_con : Construction; global_nodes_con = construction_begin(construction_arena);
+
+    c_for source_index: s64; source_index < input_files.count; source_index += 1;
+    {
+      // read the input file:
+      source: *Source; source = source_from_dir_and_name("", input_files.at[source_index]);
+      
+      if source == null  complain(0, null, "no such file"); // TODO: print what file
+      
+      // print the input file
+      if 0
+      {
+        console_error_print_string("  FILE:\n");
+        console_error_print_string(source.name);  console_error_print_string("\n");
+        console_error_print_string(source.path);  console_error_print_string("\n");
+        console_error_print_string(source.directory);  console_error_print_string("\n");
+        // console_error_print_string(source.string);  console_error_print_string("\n");
+      }
+      
+      source_tokenize(source);
+      
+      // print all tokens:
+      if 0
+      {
+        console_error_print_string("  TOKENS:\n");
+        
+        line_length : s64;
+        
+        c_for i : s64; i < source.tokens.count; i += 1;
+        {
+          ith_token : *Token; ith_token = source.tokens.at + i;
+          size : s64; size = 1 + ith_token.string.size + 3;
+          
+          if line_length + size > 100
+          {
+            console_error_print_string("\n");
+            line_length = 0;
+          }
+          
+          console_error_print_string("'");
+          console_error_print_string(ith_token.string);
+          console_error_print_string("'  ");
+          
+          line_length += size;
+        }
+        
+        console_error_print_string("\n\n");
+      }
+      
+      // complain on every token:
+      if 0
+      {
+        console_error_print_string("  COMPLAINS:\n");
+        
+        complain(COMPLAIN_NOTE, source.tokens.before_first, "");
+        
+        c_for i: s64; i < source.tokens.count; i += 1;
+          complain(COMPLAIN_NOTE, source.tokens.at + i, "");
+        
+        complain(COMPLAIN_NOTE, source.tokens.after_last, "");
+        
+        console_error_print_string("\n");
+      }
+      
+      // parse the input and construct the AST
+      parse_source_and_grow_the_list(source, global_nodes_con);
+    }
+    
+    scary_count : s64; scary_count = construction_get_size(global_nodes_con) / size_of(*Ast_Node);
+    global_nodes : **Ast_Node; global_nodes = global_nodes_con.content.cast(*void);
+    
+    c_for node_index: s64; node_index < scary_count; node_index += 1;
+    {
+      if global_nodes[node_index].node_kind == `node c_include_once`
+      {
+        name_string_token : *Token; name_string_token = global_nodes[node_index].token;
+        
+        source: *Source;
+        {
+          name_con: Construction; name_con = construction_begin(construction_arena);
+          name_part : String;
+          name_part.size = bytes_from_extended_text(name_string_token.string.size - 2, name_string_token.string.at + 1, name_con.arena);
+          name_part.at = name_con.content;
+          source = source_from_dir_and_name(name_string_token.source.directory, name_part);
+          construction_end(name_con);
+        }
+        if source == null  complain(0, name_string_token, "no such file"); // TODO: print what file
+        
+        if source.num_included == 1
+        {
+          source.include_token_opt = name_string_token;
+          source_tokenize(source);
+          parse_source_and_grow_the_list(source, global_nodes_con);
+          scary_count = construction_get_size(global_nodes_con) / size_of(*Ast_Node);
+        }
+        
+        // swap remove:
+        global_nodes[node_index] = global_nodes[scary_count - 1];
+        node_index -= 1;
+        scary_count -= 1;
+        arena_pop_to_pointer(global_nodes_con.arena, global_nodes + scary_count);
+      }
+    }
+    
+    root.num_items = construction_get_size(global_nodes_con) / size_of(*Ast_Node);
+    root.items = construction_to_eternal_then_end(global_nodes_con);
+  }
+  
+  // print the entire AST
+  if 0  ast_debug_print_to_console_error(root);
+  
+  // compute all scopes
+  scope_define_recursively(root, null);
+  
+  // print the entire AST with scopes
+  if 0  ast_debug_print_to_console_error(root);
+  
+  fe_compile_statement_recursively(root, null, null, 0);
+  
+  // print the precompiled AST
+  if 0  ast_debug_print_to_console_error(root);
+  
+  return root;
+}
+
+type_equal : (a: *Type, b: *Type) -> u64
+{
+  debug_assert(__dbgpos, a != null);
+  debug_assert(__dbgpos, b != null);
+  
+  if a == b  return 1;
+  
+  if a.type_kind != b.type_kind  return 0;
+  
+  the_kind : s64; the_kind = a.type_kind;
+  
+  if type_kind_is_integer(the_kind) or the_kind == TYPE_VOID  return 1;
+  
+  if the_kind == TYPE_POINTER_TO  return type_equal(a.sub_type, b.sub_type);
+  
+  if the_kind == TYPE_STRUCT  return a.c89_struct_name.at == b.c89_struct_name.at; // NOTE: it IS correct
+  
+  if the_kind == TYPE_FUNCTION
+  {
+    if not type_equal(a.sub_type, b.sub_type)  return 0;
+    
+    if a.num_params != b.num_params  return 0;
+    
+    c_for i: s64; i < a.num_params; i += 1;
+      if not type_equal(a.params[i].type, b.params[i].type)
+        return 0;
+    
+    return 1;
+  }
+  
+  debug_assert(__dbgpos, 0);
+  return 0;
+}
+
+type_kind_is_integer : (type_kind: s64) -> u64
+{
+  return type_kind == TYPE_U64 or type_kind == TYPE_S64
+      or type_kind == TYPE_U32 or type_kind == TYPE_S32
+      or type_kind == TYPE_U16 or type_kind == TYPE_S16
+      or type_kind == TYPE_U8  or type_kind == TYPE_S8;
+}
+
+type_implicit_cast_is_possible : (dst: *Type, src: *Type) -> u64
+{
+  debug_assert(__dbgpos, dst != null);
+  debug_assert(__dbgpos, src != null);
+  
+  if dst == src  return 1; // general truth
+  
+  if type_kind_is_integer(dst.type_kind) and type_kind_is_integer(src.type_kind)  return 1;
+  
+  if dst.type_kind != src.type_kind  return 0;
+  
+  the_kind : s64; the_kind = dst.type_kind;
+  
+  if the_kind == TYPE_VOID    return 1;
+  if the_kind == TYPE_STRUCT  return dst == src;
+  
+  if the_kind == TYPE_POINTER_TO
+  {
+    if src.sub_type.type_kind == TYPE_VOID or dst.sub_type.type_kind == TYPE_VOID  return 1;
+    
+    return type_equal(src.sub_type, dst.sub_type);
+  }
+  
+  if dst.debug_token  complain(0, dst.debug_token, "can't check if type_implicit_cast_is_possible");
+  if src.debug_token  complain(0, src.debug_token, "can't check if type_implicit_cast_is_possible");
+  debug_assert(__dbgpos, 0);
+  return 0;
+}
+
+rvalue_from : (value: Expr_Value) -> Expr_Value
+{
+  value.is_lvalue = 0;
+  return value;
+}
+
+type_kind_can_be_boolified : (type_kind: s64) -> u64
+{
+  if type_kind == TYPE_STRUCT  return 0;
+  
+  return 1;
+}
+
+fe_compile_expression_recursively : (expr: *Ast_Node, current_scope: *Scope, in_dead_code: u64) -> Expr_Value
+{
+  debug_assert(__dbgpos, expr != null);
+  debug_assert(__dbgpos, current_scope != null);
+
+  result : Expr_Value;
+  expr_kind : s64; expr_kind = expr.node_kind;
+  
+  if expr_kind == `node primary name`
+  {
+    symbol : *Symbol; symbol = expr.symbol_by_name;
+    
+    if symbol == null
+    {
+      symbol = scope_find_symbol_by_name(current_scope, expr.token.string);
+      
+      if symbol == null  complain(0, expr.token, "no such symbol");
+      
+      expr.symbol_by_name = symbol;
+    }
+    
+    if symbol.storage == STORAGE_LOCAL and not symbol.local_is_active
+    {
+      complain(COMPLAIN_ERROR, expr.token, "using a local variable before it's declared");
+      complain(COMPLAIN_NOTE, symbol.name_token, "the declaration is here");
+      process_exit(1);
+    }
+    
+    if symbol.type == null and expr.token  complain(0, expr.token, "symbol.type == null");
+    debug_assert(__dbgpos, symbol.type != null);
+    
+    result.type = symbol.type;
+    result.token = expr.token;
+    
+    if not in_dead_code  symbol.num_uses += 1; // TODO: count reads and writes separately
+    
+    if symbol.storage != STORAGE_C_ENUM
+    {
+      result.is_lvalue = (symbol.type.type_kind != TYPE_FUNCTION);
+    }
+    else
+    {
+      result.is_constexpr = 1;
+      result.as_u64 = symbol.c_enum_value;
+    }
+  }
+  else if expr_kind == `node function call`
+  {
+    function_value : Expr_Value;
+    function_value = rvalue_from(fe_compile_expression_recursively(expr.expr_0, current_scope, in_dead_code));
+    
+    function_type : *Type; function_type = function_value.type;
+    
+    if function_type.type_kind == TYPE_POINTER_TO
+      function_type = function_type.sub_type;
+    
+    if function_type.type_kind != TYPE_FUNCTION
+      complain(0, function_value.token, "not a function");
+    
+    if expr.num_items < function_type.num_params  complain(0, expr.token, "not enough arguments");
+    if expr.num_items > function_type.num_params  complain(0, expr.token, "too many arguments");
+    
+    c_for i: s64; i < expr.num_items; i += 1;
+    {
+      arg : *Ast_Node; arg = expr.items[i];
+      arg_value : Expr_Value; arg_value = rvalue_from(fe_compile_expression_recursively(arg, current_scope, in_dead_code));
+      param : Name_And_Type; param = function_type.params[i];
+      
+      if not type_implicit_cast_is_possible(param.type, arg_value.type)
+        complain(0, arg_value.token, "the argument type doesn't match the parameter type");
+    }
+    
+    result.type = function_type.sub_type;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node primary null`
+  {
+    result.type = builtin_type_ptr_to_void;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node primary string`
+  {
+    bytes_con : Construction; bytes_con = construction_begin(construction_arena);
+    size : s64; size = bytes_from_extended_text(expr.token.string.size - 2, expr.token.string.at + 1, bytes_con.arena);
+    bytes : *u8; bytes = construction_to_eternal_then_end(bytes_con);
+    
+    result.is_lvalue = 1;
+    result.is_constexpr = 1;
+    result.as_string.at = bytes;
+    result.as_string.size = size;
+    result.type = builtin_type_string;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node primary integer`
+  {
+    value : u64;
+    base : u64; base = 10;
+    
+    size : s64; size = expr.token.string.size;
+    text : *u8; text = expr.token.string.at;
+    
+    if size > 2 and text[0] == '0'
+    {
+           if text[1] == 'x'   { text += 2; size -= 2; base = 16; }
+      else if text[1] == 'b'   { text += 2; size -= 2; base = 2 ; }
+      else if text[1] == 'o'   { text += 2; size -= 2; base = 8 ; }
+      else if text[1] == 'd'   { text += 2; size -= 2; base = 10; }
+    }
+
+    c_for i: s64; i < size; i += 1;
+    {
+      ascii_digit : u64; ascii_digit = text[i];
+      
+      if ascii_digit != '_'
+      {
+        digit_int : u64; digit_int = ascii_digit_to_int(ascii_digit);
+        
+        if digit_int >= base  complain(0, expr.token, "bad integer constant");
+        
+        value *= base;
+        value += digit_int;
+      }
+    }
+
+    result.type = builtin_type_u64;
+    result.token = expr.token;
+    result.is_constexpr = 1;
+    result.as_u64 = value;
+  }
+  else if expr_kind == `node primary character`
+  {
+    bytes_con : Construction; bytes_con = construction_begin(construction_arena);
+    size : s64; size = bytes_from_extended_text(expr.token.string.size - 2, expr.token.string.at + 1, bytes_con.arena);
+    value : u64;
+    
+    c_for i: s64; i < size; i += 1;
+    {
+      value <<= 8;
+      value |= bytes_con.content[i];
+    }
+    
+    construction_end(bytes_con);
+  
+    result.is_constexpr = 1;
+    result.as_u64 = value;
+    result.type = builtin_type_u64;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node unary size_of`
+  {
+    result.type = builtin_type_s64;
+    result.token = expr.token;
+    result.is_constexpr = 1;
+    result.as_u64 = type_size_of(type_graph_from_ast(expr.expr_0, current_scope));
+  }
+  else if expr_kind == `node unary alignment_of`
+  {
+    result.type = builtin_type_s64;
+    result.token = expr.token;
+    result.is_constexpr = 1;
+    result.as_u64 = type_alignment_of(type_graph_from_ast(expr.expr_0, current_scope));
+  }
+  else if expr_kind == `node primary __dbgpos` // as String
+  {
+    bytes_con : Construction; bytes_con = construction_begin(construction_arena);
+    
+    row: s64; row = 1;
+    col: s64; col = 1;
+    
+    cp : *u8; cp = expr.token.source.string.at; // TODO: put inside the c_for's init
+    c_for ; cp != expr.token.string.at; cp += 1;
+    {
+      if cp.* == '\n'
+      {
+        row += 1;
+        col = 0;
+      }
+      
+      col += 1;
+    }
+    
+    line_at : *u8; line_at = expr.token.string.at - (col - 1);
+    line_size : s64;
+    
+    while line_at[line_size] != '\0' and line_at[line_size] != '\n'
+      line_size += 1;
+    
+    arena_print_string(bytes_con.arena, expr.token.source.name);
+    arena_print_string(bytes_con.arena, ":");
+    arena_print_s64(bytes_con.arena, row, 10, 0);
+    arena_print_string(bytes_con.arena, ": __dbgpos: ");
+    arena_print_bytes(bytes_con.arena, line_size, line_at);
+    
+    result.as_string.size = construction_get_size(bytes_con);
+    result.as_string.at   = construction_to_eternal_then_end(bytes_con);
+    
+    result.is_constexpr = 1;
+    result.type = builtin_type_string;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node binary =`
+  {
+    lhsv : Expr_Value; lhsv = fe_compile_expression_recursively(expr.expr_0, current_scope, in_dead_code);
+    rhsv : Expr_Value; rhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_1, current_scope, in_dead_code));
+    
+    if not lhsv.is_lvalue
+      complain(0, expr.token, "need an lvalue on the left of the assignment operator");
+    
+    if not type_implicit_cast_is_possible(lhsv.type, rhsv.type)
+      complain(0, rhsv.token, "the value can't be implicitly cast to the type on the left of the assignment");
+    
+    result.type = lhsv.type;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node binary *`   or expr_kind == `node binary /`   or expr_kind == `node binary %`
+       or expr_kind == `node binary |`   or expr_kind == `node binary &`   or expr_kind == `node binary ^`
+       or expr_kind == `node binary <<`  or expr_kind == `node binary >>`
+       or expr_kind == `node binary *=`  or expr_kind == `node binary /=`  or expr_kind == `node binary %=`
+       or expr_kind == `node binary |=`  or expr_kind == `node binary &=`  or expr_kind == `node binary ^=`
+       or expr_kind == `node binary <<=` or expr_kind == `node binary >>=`
+  {
+    is_assign : u64;
+    
+    is_assign = (expr_kind == `node binary *=`  or expr_kind == `node binary /=`  or expr_kind == `node binary %=`
+              or expr_kind == `node binary |=`  or expr_kind == `node binary &=`  or expr_kind == `node binary ^=`
+              or expr_kind == `node binary <<=` or expr_kind == `node binary >>=`);
+  
+    lhsv : Expr_Value; lhsv = fe_compile_expression_recursively(expr.expr_0, current_scope, in_dead_code);
+    
+    if not is_assign  lhsv = rvalue_from(lhsv);
+    
+    rhsv : Expr_Value; rhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_1, current_scope, in_dead_code));
+    
+    if is_assign and not lhsv.is_lvalue
+      complain(0, expr.token, "need an lvalue on the left of the assignment operator");
+    
+    if not type_kind_is_integer(lhsv.type.type_kind) or not type_kind_is_integer(rhsv.type.type_kind)
+      complain(0, expr.token, "integers only, please");
+    
+    if expr_kind == `node binary <<` or expr_kind == `node binary >>` or is_assign
+    {
+      result.type = lhsv.type;
+      result.token = expr.token;
+    }
+    else
+    {
+      lsize : s64; lsize = type_size_of(lhsv.type);
+      rsize : s64; rsize = type_size_of(rhsv.type);
+      
+      if lsize > rsize  result.type = lhsv.type;
+      else              result.type = rhsv.type;
+      
+      result.token = expr.token;
+    }
+  }
+  else if expr_kind == `node binary ==` or expr_kind == `node binary !=`
+       or expr_kind == `node binary <=` or expr_kind == `node binary >=`
+       or expr_kind == `node binary <`  or expr_kind == `node binary >`
+  {
+    lhsv : Expr_Value; lhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_0, current_scope, in_dead_code));
+    rhsv : Expr_Value; rhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_1, current_scope, in_dead_code));
+    
+    // TODO: disallow structs
+    if not type_implicit_cast_is_possible(lhsv.type, rhsv.type)
+      complain(0, expr.token, "the values can't be implicitly cast for a valid comparasion");
+    
+    result.type = builtin_type_u64;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node binary or` or expr_kind == `node binary and`
+  {
+    lhsv : Expr_Value; lhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_0, current_scope, in_dead_code));
+    rhsv : Expr_Value; rhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_1, current_scope, in_dead_code));
+    
+    if not type_kind_can_be_boolified(lhsv.type.type_kind)  complain(0, lhsv.token, "impossible to boolify");
+    if not type_kind_can_be_boolified(rhsv.type.type_kind)  complain(0, rhsv.token, "impossible to boolify");
+    
+    result.type = builtin_type_u64;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node unary not`
+  {
+    subv : Expr_Value; subv = rvalue_from(fe_compile_expression_recursively(expr.expr_0, current_scope, in_dead_code));
+    
+    if not type_kind_can_be_boolified(subv.type.type_kind)  complain(0, subv.token, "impossible to boolify");
+    
+    result.type = builtin_type_u64;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node unary +` or expr_kind == `node unary -` or expr_kind == `node unary ^`
+  {
+    subv : Expr_Value; subv = rvalue_from(fe_compile_expression_recursively(expr.expr_0, current_scope, in_dead_code));
+    
+    if not type_kind_is_integer(subv.type.type_kind)  complain(0, expr.token, "integers only, please");
+    
+    result.type = subv.type;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node unary .*`
+  {
+    subv : Expr_Value; subv = rvalue_from(fe_compile_expression_recursively(expr.expr_0, current_scope, in_dead_code));
+    
+    if subv.type.type_kind != TYPE_POINTER_TO  complain(0, subv.token, "need a pointer to get the value by pointer");
+    
+    result.type = subv.type.sub_type;
+    result.is_lvalue = 1;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node unary .&`
+  {
+    subv : Expr_Value; subv = fe_compile_expression_recursively(expr.expr_0, current_scope, in_dead_code);
+    
+    if not subv.is_lvalue  complain(0, subv.token, "need an lvalue to take the pointer");
+    
+    ptr_to_lvalue_type : *Type;
+    ptr_to_lvalue_type = type_create(TYPE_POINTER_TO, expr.token);
+    ptr_to_lvalue_type.sub_type = subv.type;
+    
+    result.type = ptr_to_lvalue_type;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node binary index`
+  {
+    lhsv : Expr_Value; lhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_0, current_scope, in_dead_code));
+    rhsv : Expr_Value; rhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_1, current_scope, in_dead_code));
+    
+    if lhsv.type.type_kind != TYPE_POINTER_TO
+      complain(0, lhsv.token, "need a pointer to get the value at the index");
+    
+    if not type_kind_is_integer(rhsv.type.type_kind)
+      complain(0, rhsv.token, "the index must be of an integer type");
+    
+    result.type = lhsv.type.sub_type;
+    result.is_lvalue = 1;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node binary cast`
+  {
+    subv : Expr_Value; subv = rvalue_from(fe_compile_expression_recursively(expr.expr_0, current_scope, in_dead_code));
+    type : *Type; type = type_graph_from_ast(expr.expr_1, current_scope);
+    
+    if not type_explicit_cast_is_possible(type, subv.type)
+      complain(0, expr.token, "impossible cast, sorry");
+    
+    result.type = type;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node binary .`
+  {
+    lvalue_struct_or_rvalue_ptr_to_struct : Expr_Value;
+    lvalue_struct_or_rvalue_ptr_to_struct = fe_compile_expression_recursively(expr.expr_0, current_scope, in_dead_code);
+    
+    struct_type : *Type;
+    
+    if lvalue_struct_or_rvalue_ptr_to_struct.type.type_kind == TYPE_STRUCT
+    {
+      struct_type = lvalue_struct_or_rvalue_ptr_to_struct.type;
+      
+      if not lvalue_struct_or_rvalue_ptr_to_struct.is_lvalue
+        complain(0, expr.token, "the struct is NOT an lvalue");
+    }
+    else if lvalue_struct_or_rvalue_ptr_to_struct.type.type_kind == TYPE_POINTER_TO
+    {
+      struct_type = lvalue_struct_or_rvalue_ptr_to_struct.type.sub_type;
+      
+      if struct_type.type_kind != TYPE_STRUCT
+        complain(0, expr.token, "not a pointer to struct");
+    }
+    else
+    {
+      complain(0, expr.token, "not a struct and not a pointer to struct");
+    }
+    
+    debug_assert(__dbgpos, struct_type != null);
+    debug_assert(__dbgpos, struct_type.type_kind == TYPE_STRUCT);
+    
+    if expr.expr_1.node_kind != `node primary name`
+      complain(0, expr.token, "expected the name of a member of the struct");
+    
+    name : *Token; name = expr.expr_1.token;
+    member_ref : *Name_And_Type;
+    
+    c_for i: s64; i < struct_type.num_members; i += 1;
+    {
+      ith_member : *Name_And_Type; ith_member = struct_type.members[i].&;
+      
+      debug_assert(__dbgpos, ith_member.name.at != null);
+      
+      if string_equal(ith_member.name, name.string)
+      {
+        member_ref = ith_member;
+        break;
+      }
+    }
+    
+    if member_ref == null
+      complain(0, expr.expr_1.token, "not a member of the struct");
+    
+    result.member_ref = member_ref;
+    result.type = member_ref.type;
+    result.is_lvalue = 1;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node binary +=` or expr_kind == `node binary -=`
+  {
+    lhsv : Expr_Value; lhsv =             fe_compile_expression_recursively(expr.expr_0, current_scope, in_dead_code);
+    rhsv : Expr_Value; rhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_1, current_scope, in_dead_code));
+    
+    if not lhsv.is_lvalue
+      complain(0, expr.token, "need an lvalue on the left of the assignment operator");
+    
+    
+    if type_kind_is_integer(lhsv.type.type_kind) and type_kind_is_integer(rhsv.type.type_kind)
+    {
+      // this is fine.
+    }
+    else if lhsv.type.type_kind == TYPE_POINTER_TO and type_kind_is_integer(rhsv.type.type_kind)
+    {
+      if lhsv.type.sub_type.type_kind == TYPE_VOID or lhsv.type.sub_type.type_kind == TYPE_FUNCTION
+        complain(0, expr.token, "the pointer is uniterative");
+    }
+    else
+    {
+      complain(0, rhsv.token, "the value can't be implicitly cast to the type on the left of the assignment operator");
+    }
+    
+    result.type = lhsv.type;
+    result.token = expr.token;
+  }
+  else if expr_kind == `node binary +` or expr_kind == `node binary -`
+  {
+    lhsv : Expr_Value; lhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_0, current_scope, in_dead_code));
+    rhsv : Expr_Value; rhsv = rvalue_from(fe_compile_expression_recursively(expr.expr_1, current_scope, in_dead_code));
+    
+    result.token = expr.token;
+    
+    if type_kind_is_integer(lhsv.type.type_kind) and type_kind_is_integer(rhsv.type.type_kind)
+    {
+      lsize : s64; lsize = type_size_of(lhsv.type);
+      rsize : s64; rsize = type_size_of(rhsv.type);
+      
+      if lsize > rsize  result.type = lhsv.type;
+      else              result.type = rhsv.type;
+    }
+    else if lhsv.type.type_kind == TYPE_POINTER_TO and type_kind_is_integer(rhsv.type.type_kind)
+    {
+      if lhsv.type.sub_type.type_kind == TYPE_VOID or lhsv.type.sub_type.type_kind == TYPE_FUNCTION
+        complain(0, expr.token, "the pointer is uniterative");
+      
+      result.type = lhsv.type;
+    }
+    else if rhsv.type.type_kind == TYPE_POINTER_TO and type_kind_is_integer(lhsv.type.type_kind) and expr_kind == `node binary +`
+    {
+      if rhsv.type.sub_type.type_kind == TYPE_VOID or rhsv.type.sub_type.type_kind == TYPE_FUNCTION
+        complain(0, expr.token, "the pointer is uniterative");
+      
+      result.type = rhsv.type;
+    }
+    else if lhsv.type.type_kind == TYPE_POINTER_TO and rhsv.type.type_kind == TYPE_POINTER_TO and expr_kind == `node binary -`
+    {
+      if not type_equal(lhsv.type.sub_type, rhsv.type.sub_type)
+        complain(0, expr.token, "subtracting pointers of different types");
+      
+      result.type = builtin_type_s64;
+    }
+    else
+    {
+      complain(0, expr.token, "an impossible arithmetic operation");
+    }
+  }
+  else
+  {
+    complain(0, expr.token, "iduno how to PRE-compile this");
+  }
+  
+  debug_assert(__dbgpos, result.type != null);
+  debug_assert(__dbgpos, result.token != null);
+  expr.value = result;
+  return result;
+}
+
+type_create : (type_kind: s64, debug_token_opt: *Token) -> *Type
+{
+  type : *Type; type = eternal_push(size_of(Type));
+  type.type_kind = type_kind;
+  type.debug_token = debug_token_opt;
+  return type;
+}
+
+type_graph_from_ast : (node: *Ast_Node, current_scope: *Scope) -> *Type
+{
+  if 0  console_error_print_string("  type_graph_from_ast\n");
+  
+  g_next_visit_id += 1;
+  return type_graph_from_ast_recursively(node, current_scope, g_next_visit_id, 0);
+}
+
+type_graph_from_ast_recursively : (node: *Ast_Node, current_scope: *Scope, current_visit_id: s64, indirect : u64) -> *Type
+{
+  debug_assert(__dbgpos, node != null);
+  
+  type : *Type;
+  
+  node_kind : s64; node_kind = node.node_kind;
+  
+  builtin_type : *Type;
+  
+       if node_kind == `node primary u64`     builtin_type = builtin_type_u64;
+  else if node_kind == `node primary u32`     builtin_type = builtin_type_u32;
+  else if node_kind == `node primary u16`     builtin_type = builtin_type_u16;
+  else if node_kind == `node primary u8`      builtin_type = builtin_type_u8;
+  else if node_kind == `node primary s64`     builtin_type = builtin_type_s64;
+  else if node_kind == `node primary s32`     builtin_type = builtin_type_s32;
+  else if node_kind == `node primary s16`     builtin_type = builtin_type_s16;
+  else if node_kind == `node primary s8`      builtin_type = builtin_type_s8;
+  else if node_kind == `node primary void`    builtin_type = builtin_type_void;
+  else if node_kind == `node primary String`  builtin_type = builtin_type_string;
+  
+  if builtin_type
+  {
+    type = builtin_type;
+  }
+  else if node_kind == `node unary *`
+  {
+    type = type_create(TYPE_POINTER_TO, node.token);
+    type.sub_type = type_graph_from_ast_recursively(node.expr_0, current_scope, current_visit_id, 1);
+  }
+  else if node_kind == `node function type`
+  {
+    type = type_create(TYPE_FUNCTION, node.token);
+    type.sub_type = type_graph_from_ast_recursively(node.expr_0, current_scope, current_visit_id, 0);
+    {
+      params_con : Construction; params_con = construction_begin(construction_arena);
+      
+      c_for i: s64; i < node.num_items; i += 1;
+      {
+        param_node : *Ast_Node; param_node = node.items[i];
+        
+        if param_node.node_kind != `node binary :`
+          complain(0, param_node.token, "not a declaration");
+        
+        param : Name_And_Type;
+        param.type = type_graph_from_ast_recursively(param_node.expr_1, current_scope, current_visit_id, 0);
+        param.name = param_node.expr_0.token.string;
+        
+        if param_node.expr_0.symbol_by_name
+        {
+          param.c89_name = param_node.expr_0.symbol_by_name.c89_name;
+        }
+        else
+        {
+          param.c89_name = allocate_unique_eternal_identifier();
+        }
+        
+        arena_push_copy(params_con.arena, size_of(Name_And_Type), param.&);
+      }
+      
+      type.num_params = construction_get_size(params_con) / size_of(Name_And_Type);
+      type.params = construction_to_eternal_then_end(params_con);
+    }
+  }
+  else if node_kind == `node struct`
+  {
+    type = type_create(TYPE_STRUCT, node.token);
+    type.c89_struct_name = allocate_unique_eternal_identifier();
+    
+    {
+      members_con : Construction; members_con = construction_begin(construction_arena);
+      
+      c_for i: s64; i < node.num_items; i += 1;
+      {
+        member_node : *Ast_Node; member_node = node.items[i];
+        
+        if member_node.node_kind != `node binary :`
+          complain(0, member_node.token, "not a declaration");
+        
+        debug_assert(__dbgpos, member_node.expr_0.symbol_by_name == null); // TODO: remove
+        
+        member : Name_And_Type;
+        member.type = type_graph_from_ast_recursively(member_node.expr_1, current_scope, current_visit_id, 0);
+        member.name = member_node.expr_0.token.string;
+        member.c89_name = allocate_unique_eternal_identifier();
+        
+        arena_push_copy(members_con.arena, size_of(Name_And_Type), member.&);
+      }
+      
+      type.num_members = construction_get_size(members_con) / size_of(Name_And_Type);
+      type.members = construction_to_eternal_then_end(members_con);
+    }
+  }
+  else if node_kind == `node primary name`
+  {
+    symbol : *Symbol; symbol = node.symbol_by_name;
+    
+    if symbol == null
+    {
+      symbol = scope_find_symbol_by_name(current_scope, node.token.string);
+      
+      if symbol == null  complain(0, node.token, "no such symbol");
+      
+      node.symbol_by_name = symbol;
+    }
+    
+    if symbol.storage != STORAGE_C_TYPEDEF
+      complain(0, node.token, "a valid symbol but not a type");
+    
+    recursive_definition : u64;
+    recursive_definition = (symbol.definition_index == 0 and symbol.visit_id == current_visit_id);
+    
+    if recursive_definition and not indirect
+      complain(0, node.token, "recursive type definition");
+    
+    if symbol.definition_index == 0
+      symbol.visit_id = current_visit_id;
+    
+    if symbol.type == null
+    {
+      debug_assert(__dbgpos, symbol.ast_node != null);
+      decl_node : *Ast_Node; decl_node = symbol.ast_node;
+      debug_assert(__dbgpos, decl_node.node_kind == `node binary :`);
+      
+      symbol.type = type_create(0, node.token);
+      // NOTE: this prevents it from hitting (symbol.type == NULL) again, allowing recursive type definitions
+      
+      type_copy : *Type; type_copy = type_graph_from_ast_recursively(decl_node.expr_1, current_scope, current_visit_id, 0);
+      
+      symbol.type.* = type_copy.*;
+    }
+    
+    if not recursive_definition  define_c_typedef_by_symbol(symbol);
+    
+    type = symbol.type;
+  }
+  else
+  {
+    complain(0, node.token, "not a type");
+  }
+  
+  debug_assert(__dbgpos, type != null);
+  return type;
+}
+
+define_c_typedef_by_symbol : (symbol: *Symbol) -> void
+{
+  debug_assert(__dbgpos, symbol.storage == STORAGE_C_TYPEDEF);
+
+  if symbol.definition_index == 0
+  {
+    g_next_definition_index += 1;
+    symbol.definition_index = g_next_definition_index;
+    
+    arena_push_copy(c89_sorted_typedefs_arena, size_of(*Symbol), symbol.&);
+    
+    if 0
+    {
+      console_error_print_string("  TYPE  ");
+      console_error_print_string(symbol.name_token.string);
+      console_error_print_string("\n");
+    }
+  }
+}
+
+fe_compile_statement_recursively : (stmt: *Ast_Node, current_scope: *Scope, current_function_symbol: *Symbol, in_dead_code: u64) -> void
+{
+  stmt_kind : s64; stmt_kind = stmt.node_kind;
+  
+  if stmt_kind == `node statement root`
+  {
+    c_for i: s64; i < stmt.num_items; i += 1;
+    {
+      sub_stmt : *Ast_Node; sub_stmt = stmt.items[i];
+      
+      if sub_stmt.node_kind == `node binary :`
+      {
+        symbol : *Symbol; symbol = sub_stmt.expr_0.symbol_by_name;
+        debug_assert(__dbgpos, symbol != null);
+        
+        if symbol.type == null  symbol.type = type_graph_from_ast(sub_stmt.expr_1, stmt.scope.&);
+        
+        if symbol.storage == STORAGE_C_TYPEDEF  define_c_typedef_by_symbol(symbol);
+      }
+    }
+    
+    c_for i: s64; i < stmt.num_items; i += 1;
+      fe_compile_statement_recursively(stmt.items[i], stmt.scope.&, null, in_dead_code);
+  }
+  else if stmt_kind == `node statement list`
+  {
+    c_for i: s64; i < stmt.num_items; i += 1;
+    {
+      sub_stmt : *Ast_Node; sub_stmt = stmt.items[i];
+      
+      if sub_stmt.node_kind == `node binary :`
+      {
+        symbol : *Symbol; symbol = sub_stmt.expr_0.symbol_by_name;
+        debug_assert(__dbgpos, symbol != null);
+        
+        if symbol.type == null  symbol.type = type_graph_from_ast(sub_stmt.expr_1, stmt.scope.&);
+      }
+    }
+    
+    c_for i: s64; i < stmt.num_items; i += 1;
+      fe_compile_statement_recursively(stmt.items[i], stmt.scope.&, current_function_symbol, in_dead_code);
+  }
+  else if stmt_kind == `node binary :`
+      and stmt.expr_1.node_kind == `node function type`
+      and stmt.stmt_0 != null
+  {
+    function_symbol : *Symbol; function_symbol = stmt.expr_0.symbol_by_name;
+    debug_assert(__dbgpos, function_symbol != null);
+    
+    c_for i: s64; i < stmt.expr_1.num_items; i += 1;
+    {
+      param_node : *Ast_Node; param_node = stmt.expr_1.items[i];
+      debug_assert(__dbgpos, param_node.node_kind == `node binary :`);
+      
+      param_symbol : *Symbol; param_symbol = param_node.expr_0.symbol_by_name;
+      debug_assert(__dbgpos, param_symbol != null);
+      
+      if param_symbol.storage != STORAGE_LOCAL
+        complain(0, param_node.token, "not a local variable declaration in the parameter list");
+      
+      param_symbol.local_is_active = 1;
+      
+      if param_symbol.type == null  param_symbol.type = type_graph_from_ast(param_node.expr_1, current_scope);
+    }
+    
+    fe_compile_statement_recursively(stmt.stmt_0, current_scope, function_symbol, in_dead_code);
+  }
+  else if stmt_kind == `node binary :`
+  {
+    symbol : *Symbol; symbol = stmt.expr_0.symbol_by_name;
+    debug_assert(__dbgpos, symbol != null);
+    
+    if symbol.storage == STORAGE_LOCAL  symbol.local_is_active = 1;
+  }
+  else if stmt_kind == `node c_enum`
+  {
+    // do nothing?
+  }
+  else if stmt_kind == `node statement break`
+  {
+    // do nothing!
+  }
+  else if stmt_kind == `node statement continue`
+  {
+    // do nothing...
+  }
+  else if stmt_kind == `node statement if-else`
+  {
+    fe_compile_expression_recursively(stmt.expr_0, current_scope, in_dead_code);
+    
+    if_0_comment : u64;
+    if_0_comment = (stmt.expr_0.value.is_constexpr and stmt.expr_0.value.as_u64 == 0 and stmt.stmt_1 == null);
+    
+    fe_compile_statement_recursively(stmt.stmt_0, current_scope, current_function_symbol, in_dead_code or if_0_comment);
+    
+    if stmt.stmt_1  fe_compile_statement_recursively(stmt.stmt_1, current_scope, current_function_symbol, in_dead_code);
+  }
+  else if stmt_kind == `node statement while`
+  {
+    fe_compile_expression_recursively(stmt.expr_0, current_scope, in_dead_code);
+    fe_compile_statement_recursively(stmt.stmt_0, current_scope, current_function_symbol, in_dead_code);
+  }
+  else if stmt_kind == `node statement do-while`
+  {
+    fe_compile_statement_recursively(stmt.stmt_0, current_scope, current_function_symbol, in_dead_code);
+    fe_compile_expression_recursively(stmt.expr_0, current_scope, in_dead_code);
+  }
+  else if stmt_kind == `node statement c_for`
+  {
+    if stmt.expr_0
+    {
+      decl : *Ast_Node; decl = stmt.expr_0;
+      debug_assert(__dbgpos, decl.node_kind == `node binary :`);
+      
+      symbol : *Symbol; symbol = decl.expr_0.symbol_by_name;
+      debug_assert(__dbgpos, symbol != null);
+      
+      if symbol.storage != STORAGE_LOCAL
+        complain(0, decl.token, "not a local variable in the c_for's init");
+      
+      symbol.local_is_active = 1;
+      
+      if symbol.type == null  symbol.type = type_graph_from_ast(decl.expr_1, stmt.scope.&);
+    }
+    
+    if stmt.expr_1  fe_compile_expression_recursively(stmt.expr_1, stmt.scope.&, in_dead_code);
+    if stmt.expr_2  fe_compile_expression_recursively(stmt.expr_2, stmt.scope.&, in_dead_code);
+    
+    fe_compile_statement_recursively(stmt.stmt_0, stmt.scope.&, current_function_symbol, in_dead_code);
+  }
+  else if stmt_kind == `node statement return`
+  {
+    debug_assert(__dbgpos, current_function_symbol != null);
+    debug_assert(__dbgpos, current_function_symbol.type != null);
+    debug_assert(__dbgpos, current_function_symbol.type.sub_type != null);
+    
+    if stmt.expr_0
+    {
+      rvalue : Expr_Value; rvalue = rvalue_from(fe_compile_expression_recursively(stmt.expr_0, current_scope, in_dead_code));
+      
+      if not type_implicit_cast_is_possible(current_function_symbol.type.sub_type, rvalue.type)
+        complain(0, rvalue.token, "the value can't be implicitly cast to the return type");
+    }
+  }
+  else
+  {
+    fe_compile_expression_recursively(stmt, current_scope, in_dead_code);
+  }
+}
+
+scope_define_recursively : (node : *Ast_Node, parent_scope: *Scope) -> void
+{
+  node_kind : u64; node_kind = node.node_kind;
+  
+  if node_kind == `node statement root` or node_kind == `node statement list`
+  {
+    scope_holder : *Ast_Node; scope_holder = node;
+    scope_holder.scope.parent = parent_scope;
+    {
+      scope_con : Construction; scope_con = construction_begin(construction_arena);
+      scope_holder.scope.symbols = scope_con.content.cast(*void);
+      scope_append_declarations_from_list(scope_holder.scope.&, scope_con, node.num_items, node.items, (node_kind == `node statement root`));
+      scope_holder.scope.symbols = construction_to_eternal_then_end(scope_con);
+    }
+    
+    c_for i: s64; i < node.num_items; i += 1;
+      scope_define_recursively(node.items[i], scope_holder.scope.&);
+  }
+  else if node_kind == `node statement c_for`
+  {
+    scope_holder : *Ast_Node; scope_holder = node;
+    scope_holder.scope.parent = parent_scope;
+    
+    if node.expr_0
+    {
+      scope_con : Construction; scope_con = construction_begin(construction_arena);
+      scope_holder.scope.symbols = scope_con.content.cast(*void);
+      scope_append_declarations_from_list(scope_holder.scope.&, scope_con, 1, node.expr_0.&, 0);
+      scope_holder.scope.symbols = construction_to_eternal_then_end(scope_con);
+    }
+    
+    scope_define_recursively(node.stmt_0, scope_holder.scope.&);
+  }
+  else if node_kind == `node statement if-else`
+  {
+    scope_define_recursively(node.stmt_0, parent_scope);
+    
+    if node.stmt_1  scope_define_recursively(node.stmt_1, parent_scope);
+  }
+  else if node_kind == `node statement while`
+  {
+    scope_define_recursively(node.stmt_0, parent_scope);
+  }
+  else if node_kind == `node statement do-while`
+  {
+    scope_define_recursively(node.stmt_0, parent_scope);
+  }
+  else if node_kind == `node binary :`
+      and node.expr_1.node_kind == `node function type`
+      and node.stmt_0 != null
+  {
+    debug_assert(__dbgpos, node.stmt_0.node_kind == `node statement list`);
+    scope_holder : *Ast_Node; scope_holder = node.stmt_0;
+    scope_holder.scope.parent = parent_scope;
+    {
+      scope_con : Construction; scope_con = construction_begin(construction_arena);
+      scope_holder.scope.symbols = scope_con.content.cast(*void);
+      scope_append_declarations_from_list(scope_holder.scope.&, scope_con, node.expr_1.num_items, node.expr_1.items, 0);
+      scope_append_declarations_from_list(scope_holder.scope.&, scope_con, node.stmt_0.num_items, node.stmt_0.items, 0);
+      scope_holder.scope.symbols = construction_to_eternal_then_end(scope_con);
+    }
+    
+    c_for i: s64; i < node.stmt_0.num_items; i += 1;
+      scope_define_recursively(node.stmt_0.items[i], scope_holder.scope.&);
+  }
+}
+
+array_find_symbol_by_name : (num_symptrs: s64, symptrs: **Symbol, name: String) -> *Symbol
+{
+  c_for symptr_index: s64; symptr_index < num_symptrs; symptr_index += 1;
+  {
+    symbol : *Symbol; symbol = symptrs[symptr_index];
+    
+    if string_equal(symbol.name_token.string, name)
+      return symbol;
+  }
+  
+  return null;
+}
+
+scope_find_symbol_by_name : (current_scope: *Scope, name: String) -> *Symbol
+{
+  scope : *Scope; scope = current_scope; // TODO: put it inside the c_for's init
+
+  c_for ; scope != null; scope = scope.parent;
+  {
+    s : *Symbol; s = array_find_symbol_by_name(scope.num_symbols, scope.symbols, name);
+    
+    if s  return s;
+  }
+  
+  return null;
+}
+
+scope_append_declarations_from_list : (scope: *Scope, scope_con: Construction, num_items: s64, items: **Ast_Node, is_global: u64) -> void
+{
+  c_for i: s64; i < num_items; i += 1;
+  {
+    node : *Ast_Node; node = items[i];
+    
+    if node.node_kind == `node binary :`
+    {
+      debug_assert(__dbgpos, node.expr_0.symbol_by_name == null);
+      
+      symbol : *Symbol; symbol = eternal_push(size_of(Symbol));
+      symbol.name_token = node.expr_0.token;
+      symbol.ast_node = node;
+      
+      if not node.token_c_name
+      {
+        symbol.c89_name = allocate_unique_eternal_identifier();
+      }
+      else
+      {
+        symbol.c89_name = node.token_c_name.string;
+      }
+      
+      node.expr_0.symbol_by_name = symbol;
+      
+      prev : *Symbol; prev = array_find_symbol_by_name(scope.num_symbols, scope.symbols, symbol.name_token.string);
+      
+      if prev
+      {
+        complain(COMPLAIN_ERROR, symbol.name_token, "symbol declared twice in the same scope");
+        complain(COMPLAIN_NOTE, prev.name_token, "here is another declaration");
+        process_exit(1);
+      }
+      
+      debug_assert(__dbgpos, symbol.storage == STORAGE_UNDEFINED);
+      
+      error_assert(__dbgpos, not(node.token_c_typedef and node.token_c_extern));
+      
+           if node.token_c_typedef                           symbol.storage = STORAGE_C_TYPEDEF;
+      else if node.token_c_extern                            symbol.storage = STORAGE_EXTERN;
+      else if node.expr_1.node_kind == `node function type`  symbol.storage = STORAGE_STATIC;
+      else if not is_global                                  symbol.storage = STORAGE_LOCAL;
+      else                                                   symbol.storage = STORAGE_STATIC;
+
+      arena_push_copy(scope_con.arena, size_of(*Symbol), symbol.&);
+      scope.num_symbols += 1; // the symbol is now declared but it is not yet defined
+    }
+    else if node.node_kind == `node c_enum`
+    {
+      c_for ci: s64; ci < node.num_items; ci += 1;
+      {
+        name : *Ast_Node; name = node.items[ci];
+        debug_assert(__dbgpos, name.symbol_by_name == null);
+        
+        symbol : *Symbol; symbol = eternal_push(size_of(Symbol));
+        symbol.name_token = name.token;
+        symbol.ast_node = name;
+        symbol.c89_name = allocate_unique_eternal_identifier();
+        
+        name.symbol_by_name = symbol;
+      
+        prev : *Symbol; prev = array_find_symbol_by_name(scope.num_symbols, scope.symbols, symbol.name_token.string);
+        
+        if prev
+        {
+          complain(COMPLAIN_ERROR, symbol.name_token, "symbol declared twice in the same scope");
+          complain(COMPLAIN_NOTE, prev.name_token, "here is another declaration");
+          process_exit(1);
+        }
+        
+        symbol.type = builtin_type_s64;
+        symbol.c_enum_value = ci;
+        symbol.storage = STORAGE_C_ENUM;
+
+        arena_push_copy(scope_con.arena, size_of(*Symbol), symbol.&);
+        scope.num_symbols += 1; // the symbol is now declared but it is not yet defined
+      }
+    }
+  }
+}
+
+g_next_address : s64;
+
+allocate_unique_eternal_identifier : () -> String
+{
+  id_con : Construction; id_con = construction_begin(construction_arena);
+  
+  g_next_address += 1;
+  c89_print_address(id_con.arena, g_next_address);
+  
+  id : String;
+  id.size = construction_get_size(id_con);
+  id.at = construction_to_eternal_then_end(id_con);
+  return id;
+}
+
+

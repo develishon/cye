@@ -1,0 +1,13 @@
+// 008_c_include_once_more.cye
+
+v0 : s64;
+
+c_include_once "additional_directory_for_008/a.cye";
+
+v1 : s64;
+
+c_include_once "additional_directory_for_008/b.cye";
+
+v2 : s64;
+
+

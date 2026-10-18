@@ -1,0 +1,858 @@
+// notlibc.cye
+
+// Construction Arena:
+
+construction_arena : *Arena;
+
+c_typedef Construction : struct
+{
+  arena           : *Arena;
+  prev_top        : *void;
+  prev_min_pushed : s64;
+  content         : *u8;
+};
+
+construction_begin : (arena: *Arena) -> Construction
+{
+  con : Construction;
+  
+  con.arena = arena;
+  con.prev_top = arena_get_top(con.arena);
+  
+  arena_push_aligner(con.arena, 16);
+  
+  con.content = arena_get_top(con.arena);
+  
+  con.prev_min_pushed = con.arena.min_pushed;
+  con.arena.min_pushed = con.arena.pushed;
+  
+  return con;
+}
+
+construction_get_size : (con: Construction) -> s64
+{
+  return arena_get_top(con.arena).cast(*u8) - con.content;
+}
+
+construction_end : (con: Construction) -> void
+{
+  con.arena.min_pushed = con.prev_min_pushed;
+  arena_pop_to_pointer(con.arena, con.prev_top);
+}
+
+construction_to_eternal_then_end : (con: Construction) -> *void
+{
+  size : s64; size = arena_get_top(con.arena).cast(*u8) - con.content;
+  copy : *void; copy = eternal_push_copy(size, con.content);
+  
+  construction_end(con);
+  
+  return copy;
+}
+
+// Eternal Arena:
+
+eternal_arena : *Arena;
+
+eternal_push : (size: s64) -> *void
+{
+  debug_assert(__dbgpos, eternal_arena != null);
+  debug_assert(__dbgpos, size >= 0);
+  
+  arena_push_aligner(eternal_arena, 16);
+  return arena_push(eternal_arena, size);
+}
+
+eternal_push_copy : (size: s64, data: *void) -> *void
+{
+  debug_assert(__dbgpos, eternal_arena != null);
+  debug_assert(__dbgpos, size >= 0);
+  debug_assert(__dbgpos, data != null or size == 0);
+  
+  arena_push_aligner(eternal_arena, 16);
+  return arena_push_copy(eternal_arena, size, data);
+}
+
+// integers:
+
+s64_align : (number: s64, alignment: s64) -> s64
+{
+  debug_assert(__dbgpos, alignment >= 1);
+  
+  remainder : s64;
+  remainder = number % alignment;
+  
+  if remainder == 0
+    return number;
+  
+  return number + alignment - remainder;
+}
+
+s64_max : (a: s64, b: s64) -> s64
+{
+  if a > b  return a;
+  else      return b;
+}
+
+s64_min : (a: s64, b: s64) -> s64
+{
+  if a < b  return a;
+  else      return b;
+}
+
+u64_max : (a: u64, b: u64) -> u64
+{
+  if a > b  return a;
+  else      return b;
+}
+
+u64_min : (a: u64, b: u64) -> u64
+{
+  if a < b  return a;
+  else      return b;
+}
+
+// string.h equivalent
+
+string_equal : (a: String, b: String) -> u64
+{
+  return a.size == b.size and memory_equal(a.at, b.at, a.size);
+}
+
+memory_set_every_byte_to_value : (a: *void, value: u64, size: s64) -> void
+{
+  debug_assert(__dbgpos, size >= 0);
+  debug_assert(__dbgpos, value <= 0xFF);
+  debug_assert(__dbgpos, size == 0 or a != null);
+  
+  c_for i : s64; i < size; i += 1;
+    a.cast(*u8)[i] = value;
+}
+
+memory_zero : (a: *void, size: s64) -> void
+{
+  debug_assert(__dbgpos, size >= 0);
+  debug_assert(__dbgpos, size == 0 or a != null);
+  
+  memory_set_every_byte_to_value(a, 0, size);
+}
+
+memory_move : (dst: *void, src: *void, size: s64) -> void
+{
+  debug_assert(__dbgpos, size >= 0);
+  debug_assert(__dbgpos, size == 0 or dst != null);
+  debug_assert(__dbgpos, size == 0 or src != null);
+  
+  dst_bytes : *u8;
+  dst_bytes = dst;
+  
+  src_bytes : *u8;
+  src_bytes = src;
+  
+  if dst.cast(s64) <= src.cast(s64)
+  {
+    c_for i : s64; i < size; i += 1;
+      dst_bytes[i] = src_bytes[i];
+  }
+  else
+  {
+    c_for i : s64; i < size; i += 1;
+    {
+      ri : s64; ri = size - 1 - i;
+      dst_bytes[ri] = src_bytes[ri];
+    }
+  }
+}
+
+memory_equal : (a: *void, b: *void, size: s64) -> u64
+{
+  debug_assert(__dbgpos, size >= 0);
+  debug_assert(__dbgpos, size == 0 or a != null);
+  debug_assert(__dbgpos, size == 0 or b != null);
+  
+  c_for i : s64; i < size; i += 1;
+    if a.cast(*u8)[i] != b.cast(*u8)[i]
+      return 0;
+  
+  return 1;
+}
+
+memory_copy : (dst: *void, src: *void, size: s64) -> void
+{
+  debug_assert(__dbgpos, size >= 0);
+  debug_assert(__dbgpos, size == 0 or dst != null);
+  debug_assert(__dbgpos, size == 0 or src != null);
+  
+  c_for i : s64; i < size; i += 1;
+    dst.cast(*u8)[i] = src.cast(*u8)[i];
+}
+
+// ctype.h equivalent
+
+ascii_digit_from_int : (number: s64) -> u64
+{
+  debug_assert(__dbgpos, number >= 0);
+  debug_assert(__dbgpos, number < 16);
+  
+  if number < 10  return number + '0';
+  
+  return 'A' - 10 + number;
+}
+
+ascii_digit_to_int : (c: u64) -> s64
+{
+  if 'A' <= c and c <= 'F'  return c - 'A' + 10;
+  if 'a' <= c and c <= 'f'  return c - 'a' + 10;
+  if '0' <= c and c <= '9'  return c - '0';
+  
+  return 100;
+}
+
+ascii_is_space : (c: u64) -> u64
+{
+  return c == ' ' or c == '\n';
+}
+
+ascii_is_letter : (c: u64) -> u64
+{
+  return 'A' <= c and c <= 'Z'
+      or 'a' <= c and c <= 'z';
+}
+
+ascii_is_letter_or_digit : (c: u64) -> u64
+{
+  return 'A' <= c and c <= 'Z'
+      or 'a' <= c and c <= 'z'
+      or '0' <= c and c <= '9';
+}
+
+ascii_is_decimal_digit : (c: u64) -> u64
+{
+  return '0' <= c and c <= '9';
+}
+
+ascii_is_uppercase_hexadecimal_digit : (c: u64) -> u64
+{
+  return 'A' <= c and c <= 'F'
+      or '0' <= c and c <= '9';
+}
+
+// assert.h equivalent
+
+debug_assert : (dbgpos: String, _true: u64) -> void
+{
+  if not _true
+    say_and_die("debug_assert FAILED\n", dbgpos);
+}
+
+resource_assert : (dbgpos: String, _true: u64) -> void
+{
+  if not _true
+    say_and_die("resource_assert FAILED\n", dbgpos);
+}
+
+error_assert : (dbgpos: String, _true: u64) -> void
+{
+  if not _true
+    say_and_die("error_assert FAILED\n", dbgpos);
+}
+
+//-------------------------------------------------------------------------------------------------
+// arena.cye
+//-------------------------------------------------------------------------------------------------
+
+c_typedef Arena : struct
+{
+  at         : *u8;
+  pushed     : s64;
+  commited   : s64;
+  reserved   : s64;
+  min_pushed : s64;
+};
+
+// Arena Print:
+
+arena_print_bytes : (arena: *Arena, size: s64, data: *void) -> s64
+{
+  debug_assert(__dbgpos, arena != null);
+  debug_assert(__dbgpos, arena.at != null);
+  debug_assert(__dbgpos, arena.pushed >= 0);
+  debug_assert(__dbgpos, arena.commited >= 0);
+  debug_assert(__dbgpos, arena.reserved >= 0);
+  debug_assert(__dbgpos, size >= 0);
+  debug_assert(__dbgpos, data != null or size == 0);
+  
+  arena_push_copy(arena, size, data);
+  
+  return size;
+}
+
+arena_print_string : (arena: *Arena, string: String) -> s64
+{
+  debug_assert(__dbgpos, arena != null);
+  debug_assert(__dbgpos, arena.at != null);
+  debug_assert(__dbgpos, arena.pushed >= 0);
+  debug_assert(__dbgpos, arena.commited >= 0);
+  debug_assert(__dbgpos, arena.reserved >= 0);
+  debug_assert(__dbgpos, string.at != null or string.size == 0);
+  
+  return arena_print_bytes(arena, string.size, string.at);
+}
+
+arena_print_row : (arena: *Arena, size: s64, ch: u64) -> s64
+{
+  debug_assert(__dbgpos, arena != null);
+  debug_assert(__dbgpos, arena.at != null);
+  debug_assert(__dbgpos, arena.pushed >= 0);
+  debug_assert(__dbgpos, arena.commited >= 0);
+  debug_assert(__dbgpos, arena.reserved >= 0);
+  debug_assert(__dbgpos, size >= 0);
+  debug_assert(__dbgpos, ch <= 0xFF);
+  
+  bytes : *void;
+  bytes = arena_push(arena, size);
+  memory_set_every_byte_to_value(bytes, ch, size);
+  
+  return size;
+}
+
+arena_print_u64 : (arena: *Arena, number: u64, base: u64, min_length: s64) -> s64
+{
+  debug_assert(__dbgpos, arena != null);
+  debug_assert(__dbgpos, arena.at != null);
+  debug_assert(__dbgpos, arena.pushed >= 0);
+  debug_assert(__dbgpos, arena.commited >= 0);
+  debug_assert(__dbgpos, arena.reserved >= 0);
+  debug_assert(__dbgpos, base >= 2);
+  debug_assert(__dbgpos, base <= 16);
+  debug_assert(__dbgpos, min_length >= 0);
+
+  size : s64;
+  
+  ndigits : s64; ndigits = 1;
+  copy    : u64; copy    = number / base;
+  
+  while copy > 0
+  {
+    ndigits += 1;
+    copy /= base;
+  }
+  
+  if ndigits < min_length
+  {
+    arena_print_row(arena, min_length - ndigits, '0');
+    size = min_length;
+  }
+  else
+  {
+    size = ndigits;
+  }
+  
+  chars : *u8; chars = arena_push(arena, ndigits);
+  
+  c_for i : s64; i < ndigits; i += 1;
+  {
+    ri : s64; ri = ndigits - 1 - i;
+    
+    chars[ri] = ascii_digit_from_int(number % base);
+    number /= base;
+  }
+  
+  return size;
+}
+
+arena_print_s64 : (arena: *Arena, number: s64, base: u64, min_length: s64) -> s64
+{
+  debug_assert(__dbgpos, arena != null);
+  debug_assert(__dbgpos, arena.at != null);
+  debug_assert(__dbgpos, arena.pushed >= 0);
+  debug_assert(__dbgpos, arena.commited >= 0);
+  debug_assert(__dbgpos, arena.reserved >= 0);
+  debug_assert(__dbgpos, base >= 2);
+  debug_assert(__dbgpos, base <= 16);
+  debug_assert(__dbgpos, min_length >= 0);
+  
+  result : s64;
+  
+  if number < 0
+  {
+    result += 1;
+    number *= -1;
+    min_length = s64_max(0, min_length - 1);
+  }
+  
+  result += arena_print_u64(arena, number, base, min_length);
+  
+  return result;
+}
+
+// Arena
+
+arena_create : (min_reserved: s64) -> *Arena
+{
+  debug_assert(__dbgpos, min_reserved >= 0);
+  debug_assert(__dbgpos, min_reserved < 1.cast(s64) << 40); // TODO: no cast
+
+  one_page : s64;
+  reserved : s64;
+  commited : s64;
+  
+  one_page = 0x1000;
+  reserved = one_page;
+  commited = one_page;
+  
+  while reserved < min_reserved  reserved *= 2;
+  
+  true_reserved : s64;
+  true_commited : s64;
+  
+  true_reserved = one_page + reserved;
+  true_commited = one_page + commited;
+  
+  p_0 : *void; p_0 = system_memory_reserve(true_reserved);
+  resource_assert(__dbgpos, p_0 != null);
+  
+  err : u64; err = system_memory_commit(true_commited, p_0);
+  resource_assert(__dbgpos, err == 0);
+
+  arena : *Arena; arena = p_0;
+
+  arena.at       = p_0.cast(*u8) + one_page;
+  arena.reserved = reserved;
+  arena.commited = commited;
+  arena.pushed   = 0;
+
+  debug_assert(__dbgpos, arena != null);
+  return arena;
+}
+
+arena_get_top : (arena: *Arena) -> *void
+{
+  debug_assert(__dbgpos, arena != null);
+  debug_assert(__dbgpos, arena.at != null);
+  debug_assert(__dbgpos, arena.pushed >= 0);
+  return arena.at + arena.pushed;
+}
+
+arena_push_uninited : (arena: *Arena, size: s64) -> *void
+{
+  debug_assert(__dbgpos, arena != null);
+  debug_assert(__dbgpos, arena.at != null);
+  debug_assert(__dbgpos, arena.pushed >= 0);
+  debug_assert(__dbgpos, arena.commited >= 0);
+  debug_assert(__dbgpos, arena.reserved >= 0);
+  debug_assert(__dbgpos, size >= 0);
+  
+  result : *void; result = arena_get_top(arena);
+  
+  arena.pushed += size;
+  
+  while arena.commited < arena.pushed
+  {
+    commited : s64;
+    new_half : *void;
+    
+    commited = arena.commited;
+    new_half = arena.at + commited;
+    
+    arena.commited *= 2;
+    resource_assert(__dbgpos, arena.commited <= arena.reserved);
+    
+    err : u64; err = system_memory_commit(commited, new_half);
+    resource_assert(__dbgpos, err == 0);
+  }
+  
+  debug_assert(__dbgpos, result != null);
+  return result;
+}
+
+arena_push : (arena: *Arena, size: s64) -> *void
+{
+  debug_assert(__dbgpos, arena != null);
+  debug_assert(__dbgpos, arena.at != null);
+  debug_assert(__dbgpos, arena.pushed >= 0);
+  debug_assert(__dbgpos, arena.commited >= 0);
+  debug_assert(__dbgpos, arena.reserved >= 0);
+  debug_assert(__dbgpos, size >= 0);
+  
+  result : *void; result = arena_push_uninited(arena, size);
+  memory_zero(result, size);
+  
+  debug_assert(__dbgpos, result != null);
+  return result;
+}
+
+arena_push_aligner : (arena: *Arena, alignment: s64) -> void
+{
+  debug_assert(__dbgpos, arena != null);
+  debug_assert(__dbgpos, arena.at != null);
+  debug_assert(__dbgpos, arena.pushed >= 0);
+  debug_assert(__dbgpos, arena.commited >= 0);
+  debug_assert(__dbgpos, arena.reserved >= 0);
+  debug_assert(__dbgpos, alignment >= 1);
+  
+  remainder : s64; remainder = arena.pushed % alignment;
+  
+  if remainder != 0  arena_push(arena, alignment - remainder);
+}
+
+arena_push_copy : (arena: *Arena, size: s64, data: *void) -> *void
+{
+  debug_assert(__dbgpos, arena != null);
+  debug_assert(__dbgpos, arena.at != null);
+  debug_assert(__dbgpos, arena.pushed >= 0);
+  debug_assert(__dbgpos, arena.commited >= 0);
+  debug_assert(__dbgpos, arena.reserved >= 0);
+  debug_assert(__dbgpos, size >= 0);
+  debug_assert(__dbgpos, data != null or size == 0);
+  
+  result : *void; result = arena_push_uninited(arena, size);
+  memory_copy(result, data, size);
+  
+  debug_assert(__dbgpos, result != null);
+  return result;
+}
+
+arena_push_string : (arena: *Arena, string: String) -> *void
+{
+  debug_assert(__dbgpos, arena != null);
+  debug_assert(__dbgpos, arena.at != null);
+  debug_assert(__dbgpos, arena.pushed >= 0);
+  debug_assert(__dbgpos, arena.commited >= 0);
+  debug_assert(__dbgpos, arena.reserved >= 0);
+  debug_assert(__dbgpos, string.size >= 0);
+  debug_assert(__dbgpos, string.at != null or string.size == 0);
+  
+  result : *void; result = arena_push_uninited(arena, string.size);
+  memory_copy(result, string.at, string.size);
+  
+  debug_assert(__dbgpos, result != null);
+  return result;
+}
+
+arena_pop_to_pointer : (arena: *Arena, pointer: *void) -> void
+{
+  debug_assert(__dbgpos, arena != null);
+  debug_assert(__dbgpos, arena.at != null);
+  debug_assert(__dbgpos, arena.pushed >= 0);
+  debug_assert(__dbgpos, arena.commited >= 0);
+  debug_assert(__dbgpos, arena.reserved >= 0);
+  debug_assert(__dbgpos, pointer != null);
+  
+  new_pushed : s64; new_pushed = pointer.cast(*u8) - arena.at;
+  
+  debug_assert(__dbgpos, new_pushed >= 0);
+  debug_assert(__dbgpos, new_pushed >= arena.min_pushed);
+  debug_assert(__dbgpos, new_pushed <= arena.pushed);
+  
+  arena.pushed = new_pushed;
+}
+
+//-------------------------------------------------------------------------------------------------
+// File System
+//-------------------------------------------------------------------------------------------------
+
+path_get_directory_part : (path: String) -> String
+{
+  dir: String;
+  dir.at = path.at;
+  
+  c_for i: s64; i < path.size; i += 1;
+  {
+    ri: s64; ri = path.size - 1 - i;
+    
+    if path.at[ri] == '/' or path.at[ri] == '\\'
+    {
+      dir.size = ri + 1; // including the separator
+      break;
+    }
+  }
+  
+  return dir;
+}
+
+path_absolute_concat : (path_a: String, path_b: String, fullpath_out: *String, arena: *Arena) -> u64
+{
+  result: u64; result = 1;
+  
+  cat: String;
+  cat.at = arena_get_top(arena);
+  
+  cat.size += arena_print_string(arena, path_a);
+  
+  if path_a.size > 0 and not(path_a.at[0] == '/' or path_a.at[0] == '\\')
+    cat.size += arena_print_string(arena, "/");
+  
+  cat.size += arena_print_string(arena, path_b);
+  
+  fullcat : String;
+  
+  err : u64; err = path_to_absolute_path(cat, fullcat.&, arena);
+  
+  if not err
+  {
+    memory_move(cat.at, fullcat.at, fullcat.size);
+    arena_pop_to_pointer(arena, cat.at + fullcat.size); // so there is only the full path left
+    
+    fullpath_out.at   = cat.at;
+    fullpath_out.size = fullcat.size;
+  }
+  else
+  {
+    arena_pop_to_pointer(arena, cat.at);
+  }
+  
+  return result;
+}
+
+//-------------------------------------------------------------------------------------------------
+//
+//
+// NOTE: nothing above this comment should use Windows API directly
+//
+//
+//-------------------------------------------------------------------------------------------------
+
+//-------------------------------------------------------------------------------------------------
+// os_api.cye
+//-------------------------------------------------------------------------------------------------
+
+// system memory:
+
+system_memory_commit : (size: s64, base: *void) -> u64
+{
+  pointer : *void; pointer = w_VirtualAlloc(base, size, 0x00001000, 0x04); // MEM_COMMIT, PAGE_READWRITE
+  
+  return pointer == null;
+}
+
+system_memory_reserve : (size: s64) -> *void
+{
+  debug_assert(__dbgpos, size >= 0);
+  
+  result : *void; result = w_VirtualAlloc(null, size, 0x00002000, 0x04); // MEM_RESERVE, PAGE_READWRITE
+  
+  return result;
+}
+
+// misc.
+
+get_w_stderr : () -> *void
+{
+  return w_GetStdHandle(-12); // -12 means stderr
+}
+
+say_and_die : (msg: String, dbgpos: String) -> void
+{
+  f : *void; f = get_w_stderr();
+
+  w_WriteFile(f, msg.at, msg.size, null, null);
+  w_WriteFile(f, dbgpos.at, dbgpos.size, null, null);
+  w_WriteFile(f, "\n".at, 1, null, null);
+  w_ExitProcess(1);
+}
+
+// CLI:
+
+c_typedef String_Array : struct
+{
+  at    : *String;
+  count : s64;
+};
+
+command_get_arguments : () -> String_Array
+{
+  command_line : *u8; command_line = w_GetCommandLineA();
+  cp : *u8; cp = command_line;
+  
+  args_con : Construction; args_con = construction_begin(construction_arena);
+  
+  while cp.* != '\0'
+  {
+    while cp.* == ' '  cp += 1;
+    
+    argument : String;
+    argument.at = cp;
+    
+    while cp.* != ' ' and cp.* != '\0'   cp += 1;
+    
+    argument.size = cp - argument.at;
+    argument.at = eternal_push_copy(argument.size, argument.at);
+    
+    arena_push_copy(args_con.arena, size_of(String), argument.&);
+  }
+  
+  result : String_Array;
+  result.count = construction_get_size(args_con) / size_of(String);
+  result.at = construction_to_eternal_then_end(args_con);
+  result.count -= 1;
+  result.at += 1;
+  return result;
+}
+
+// File System:
+
+path_to_absolute_path : (path: String, fullpath_out: *String, arena: *Arena) -> u64
+{
+  result: u64; result = 1;
+  
+  cpath : *u8; cpath = arena_push_string(arena, path);
+  arena_push(arena, 1); // NOTE: cpath is a null-terminated string
+  
+  size_or_zero : u32; size_or_zero = w_GetFullPathNameA(cpath, 0, null, null);
+  
+  if size_or_zero != 0
+  {
+    size : s64; size = size_or_zero;
+    cfullpath : *u8; cfullpath = arena_push_uninited(arena, size);
+    
+    cnamepart : *u8;
+    length_or_zero : u32; length_or_zero = w_GetFullPathNameA(cpath, size, cfullpath, cnamepart.&);
+    
+    if length_or_zero != 0 and length_or_zero == size_or_zero - 1
+    {
+      length : s64; length = length_or_zero;
+      memory_move(cpath, cfullpath, length);
+      arena_pop_to_pointer(arena, cpath + length); // so there is only cfullpath left without any terminators
+      
+      fullpath_out.at   = cpath;
+      fullpath_out.size = length;
+      result = 0;
+    }
+  }
+  
+  if result
+  {
+    arena_pop_to_pointer(arena, cpath);
+  }
+  
+  return result;
+}
+
+// File IO:
+
+file_read_all_bytes : (path: String, size_out_opt: *s64) -> *void
+{
+  debug_assert(__dbgpos, path.at != null or path.size == 0);
+  
+  result : *void;
+  
+  file_handle : *void;
+  {
+    cpath_con : Construction; cpath_con = construction_begin(construction_arena);
+    arena_push_copy(cpath_con.arena, path.size, path.at);
+    arena_push(cpath_con.arena, 1); // NOTE: cpath is a null-terminated string
+    
+    file_handle = w_CreateFileA(cpath_con.content, 0x80000000, 0, null, 3, 128, null); // GENERIC_READ, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL
+    
+    construction_end(cpath_con);
+  }
+  
+  if file_handle != (^(0.cast(u64))).cast(*void) // INVALID_HANDLE_VALUE // TODO: remove .cast(u64)
+  {
+    file_size : u64; file_size = w_GetFileSize(file_handle, null);
+    
+    valid_file_size : s64;
+    
+    if file_size != 0xFFFFFFFF
+      valid_file_size = file_size;
+    
+    file_con : Construction; file_con = construction_begin(construction_arena);
+    file_content : *u8; file_content = arena_push(file_con.arena, valid_file_size);
+    
+    ok_0 : u64;
+    ok_1 : u64;
+    ok_2 : u64;
+    
+    file_size_out : u32;
+    ok_0 = w_ReadFile(file_handle, file_content, valid_file_size, file_size_out.&, null);
+    ok_1 = (valid_file_size == file_size_out);
+    ok_2 = w_CloseHandle(file_handle);
+    
+    if ok_0 and ok_1 and ok_2
+    {
+      result = construction_to_eternal_then_end(file_con);
+      if size_out_opt  size_out_opt.* = valid_file_size;
+    }
+    else
+    {
+      construction_end(file_con);
+    }
+  }
+  
+  return result;
+}
+
+file_write_all_bytes : (path: String, size: s64, data: *void) -> u64
+{
+  debug_assert(__dbgpos, path.at != null or path.size == 0);
+  debug_assert(__dbgpos, size >= 0);
+  debug_assert(__dbgpos, size < 0x10000000);
+  debug_assert(__dbgpos, data != null or size == 0);
+
+  result : u64;
+  
+  file_handle : *void;
+  {
+    cpath_con : Construction; cpath_con = construction_begin(construction_arena);
+    arena_push_copy(cpath_con.arena, path.size, path.at);
+    arena_push(cpath_con.arena, 1); // NOTE: cpath is a null-terminated string
+    
+    file_handle = w_CreateFileA(cpath_con.content, 0x40000000, 0, null, 2, 128, null); // GENERIC_WRITE, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL
+    
+    construction_end(cpath_con);
+  }
+  
+  if file_handle != (^(0.cast(u64))).cast(*void) // INVALID_HANDLE_VALUE // TODO: remove .cast(u64)
+  {
+    ok_0 : u64;
+    ok_1 : u64;
+    
+    ok_0 = w_WriteFile(file_handle, data, size, null, null);
+    ok_1 = w_CloseHandle(file_handle);
+    
+    result = (ok_0 and ok_1);
+  }
+  
+  return result;
+}
+
+// stdlib.h equivalent
+
+process_exit : (status: u64) -> void
+{
+  w_ExitProcess(status);
+}
+
+// stdio.h not really an equivalent
+
+console_error_print_bytes : (size: s64, data: *void) -> void
+{
+  debug_assert(__dbgpos, size >= 0);
+  debug_assert(__dbgpos, data != null or size == 0);
+  
+  w_WriteFile(w_stderr, data, size, null, null);
+}
+
+console_error_print_string : (string: String) -> void
+{
+  debug_assert(__dbgpos, string.at != null or string.size == 0);
+  
+  console_error_print_bytes(string.size, string.at);
+}
+
+console_init : () -> void
+{
+  w_stderr = get_w_stderr();
+  
+  prev_mode : u32;
+  ok_0 : u64; ok_0 = w_GetConsoleMode(w_stderr, prev_mode.&);
+  resource_assert(__dbgpos, ok_0);
+  
+  ok_1 : u64; ok_1 = w_SetConsoleMode(w_stderr, prev_mode | 4); // enabling virtual terminal mode
+  resource_assert(__dbgpos, ok_1);
+}
+
+w_stderr : *void;
+
+

@@ -2,7 +2,7 @@
 
 main : () -> void
 {
-  w_MessageBoxA(null, c_string "Hello, World!", c_string "Message", 0);
+  w_MessageBoxA(null, "Hello, World!\0".at, "Message\0".at, 0);
 }
 
 c_extern c_name MessageBoxA

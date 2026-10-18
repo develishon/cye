@@ -1,0 +1,41 @@
+// windows_kernel32.cye
+
+// some functions from `kernel32.dll`, but not all of them:
+
+c_extern c_name GetConsoleMode
+w_GetConsoleMode : (console_handle: *void, mode_flags_out: *u32) -> s32;
+
+c_extern c_name SetConsoleMode
+w_SetConsoleMode : (console_handle: *void, mode_flags: u32) -> s32;
+
+c_extern c_name GetStdHandle
+w_GetStdHandle : (std_handle: s32) -> *void;
+
+c_extern c_name WriteFile
+w_WriteFile : (file_handle: *void, data: *void, size: u32, size_out_opt: *u32, overlapped_in_out_opt: *void) -> s32;
+
+c_extern c_name ExitProcess
+w_ExitProcess : (status: u32) -> void;
+
+c_extern c_name GetCommandLineA
+w_GetCommandLineA : () -> *u8;
+
+c_extern c_name ReadFile
+w_ReadFile : (file_handle: *void, data_out: *void, size: u32, size_out: *u32, overlapped_in_out_opt: *void) -> s32;
+
+c_extern c_name VirtualAlloc
+w_VirtualAlloc : (base: *void, size: u64, allocation_flags: u32, protect_flags: u32) -> *void;
+
+c_extern c_name CreateFileA
+w_CreateFileA : (cpath: *u8, access: u32, share: u32, security_opt: *void, disposition: u32, flags: u32, template_opt: *void) -> *void;
+
+c_extern c_name CloseHandle
+w_CloseHandle : (handle: *void) -> s32;
+
+c_extern c_name GetFileSize
+w_GetFileSize : (file_handle: *void, size_most_significant_part_out_opt: *u32) -> u32;
+
+c_extern c_name GetFullPathNameA
+w_GetFullPathNameA : (cfilename: *u8, size: u32, buffer_out_opt: *u8, name_part_out_opt: **u8) -> u32;
+
+

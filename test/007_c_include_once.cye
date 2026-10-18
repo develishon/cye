@@ -1,0 +1,13 @@
+// 007_c_include_once.cye
+
+main : () -> void
+{
+  msg : String;
+  msg = "More than one file\n";
+  
+  w_WriteFile(w_GetStdHandle(-11), msg.at, msg.size, null, null);
+}
+
+c_include_once "W:\\cye_dev\\test/additional_file_for_007.cye";
+
+

@@ -1,0 +1,7 @@
+// d.cye
+
+v_from_d : s64;
+
+c_include_once "b.cye";
+
+

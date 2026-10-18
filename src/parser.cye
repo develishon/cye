@@ -1,0 +1,1483 @@
+// parser.cye
+
+input_directory_arena : *Arena;
+source_arena : *Arena;
+
+c_typedef Source : struct
+{
+  string    : String;
+  path      : String;
+  name      : String;
+  directory : String;
+  include_token_opt : *Token;
+  num_included      : s64;
+  tokens : Token_Array;
+};
+
+c_typedef Token_Array : struct
+{
+  at    : *Token;
+  count : s64;
+  before_first : *Token;
+  after_last   : *Token;
+};
+
+c_typedef Token : struct
+{
+  string     : String;
+  token_kind : s64;
+  source     : *Source;
+};
+
+c_typedef Parser : struct
+{
+  tokens : Token_Array;
+  index  : s64;
+};
+
+c_typedef Ast_Node : struct
+{
+  node_kind : s64;
+  token     : *Token;
+
+  expr_0 : *Ast_Node;
+  // unary
+  // lhs in binary
+  // function in a call
+  // return value (opt.)
+  // return type (opt.)
+  // condition in while/do-while/if
+  // c_for init
+  
+  expr_1 : *Ast_Node;
+  // rhs in binary
+  // c_for condition
+  
+  expr_2 : *Ast_Node;
+  // c_for reinit
+  
+  stmt_0 : *Ast_Node;
+  // function body
+  // if true
+  // while
+  // do-while
+  // break with (opt.)
+  // continue with (opt.)
+  // c_for
+  
+  stmt_1 : *Ast_Node;
+  // else
+  
+  num_items : s64;
+  items     : **Ast_Node;
+  // arguments
+  // parameters
+  // statements
+  // globals
+  
+  symbol_by_name : *Symbol; // node_kind == `node primary name`
+  
+  // node_kind == `node binary :`
+  token_c_extern  : *Token;
+  token_c_typedef : *Token;
+  token_c_name    : *Token;
+  
+  value : Expr_Value;
+  scope : Scope; // node_kind == `node statement root` or == `node statement list` or == `node statement c_for`
+};
+
+source_from_dir_and_name : (parent_dir: String, name: String) -> *Source
+{
+  result: *Source;
+  prototype: Source;
+  
+  without_parent_dir : *void; without_parent_dir = arena_get_top(input_directory_arena);
+  arena_push_copy(input_directory_arena, size_of(String), parent_dir.&);
+  
+  dirs : *String; dirs = input_directory_arena.at.cast(*void);
+  num_dirs : s64; num_dirs = input_directory_arena.pushed / size_of(String);
+  
+  c_for dir_index: s64; dir_index < num_dirs; dir_index += 1;
+  {
+    reverse_dir_index : s64; reverse_dir_index = num_dirs - 1 - dir_index;
+    directory : String; directory = dirs[reverse_dir_index];
+    
+    path_con: Construction; path_con = construction_begin(construction_arena);
+    path_absolute_concat(directory, name, prototype.path.&, path_con.arena);
+    
+    // console_error_print_string("  PATH: ");
+    // console_error_print_string(prototype.path);
+    // console_error_print_string("\n");
+    
+    sources: *Source; sources = source_arena.at.cast(*void);
+    num_sources: s64; num_sources = source_arena.pushed / size_of(Source);
+    
+    c_for si: s64; si < num_sources; si += 1;
+    {
+      if string_equal(sources[si].path, prototype.path)
+      {
+        result = sources + si;
+        break;
+      }
+    }
+    
+    if result != null
+    {
+      construction_end(path_con);
+      result.num_included += 1;
+      break;
+    }
+    else
+    {
+      prototype.string.at = file_read_all_bytes(prototype.path, prototype.string.size.&);
+      
+      if prototype.string.at
+      {
+        prototype.path.at = construction_to_eternal_then_end(path_con);
+        prototype.directory = path_get_directory_part(prototype.path);
+        prototype.name.at = eternal_push_copy(name.size, name.at);
+        prototype.name.size = name.size;
+        prototype.num_included = 1;
+        
+        result = arena_push_copy(source_arena, size_of(Source), prototype.&);
+        break;
+      }
+      else
+      {
+        construction_end(path_con);
+      }
+    }
+  }
+  
+  arena_pop_to_pointer(input_directory_arena, without_parent_dir);
+  return result;
+}
+
+parse_source_and_grow_the_list : (source: *Source, global_nodes_con: Construction) -> void
+{
+  _parser : Parser;
+  parser : *Parser; parser = _parser.&;
+  parser.tokens = source.tokens;
+
+  while parser_tokens_left(parser) > 0
+  {
+    global : *Ast_Node;
+  
+    if parser_accept(parser, `token c_enum`)
+    {
+      c_enum_token : *Token; c_enum_token = parser_at(parser, -1);
+      
+      if not parser_inspect(parser, `token {`)
+        complain(0, parser_safe_at(parser, 0), "expected the openning curly brace '{' after c_enum");
+      
+      global = parse_statement(parser);
+      global.node_kind = `node c_enum`;
+      global.token = c_enum_token;
+      
+      c_for i: s64; i < global.num_items; i += 1;
+      {
+        node : *Ast_Node; node = global.items[i];
+        
+        if node.node_kind != `node primary name`  complain(0, node.token, "not a name in the c_enum");
+      }
+    }
+    else if parser_accept(parser, `token c_include_once`)
+    {
+      parser_expect(parser, `token string`, "the string specifying what file to include");
+      global = ast_create_node(`node c_include_once`, parser_at(parser, -1));
+      parser_expect(parser, `token ;`, "the semicolon ';' after the c_include_once");
+    }
+    else
+    {
+      global = parse_expression(parser, 0);
+      
+      if global.node_kind == `node binary :`
+         and global.expr_1.node_kind == `node function type`
+         and parser_inspect(parser, `token {`)
+      {
+        global.stmt_0 = parse_statement(parser);
+      }
+      else
+      {
+        parser_expect(parser, `token ;`, "the semicolon ';' after the global declartion");
+      }
+    }
+    
+    arena_push_copy(global_nodes_con.arena, size_of(*Ast_Node), global.&);
+  }
+}
+
+// the operator precedence:
+// 0.  x(...)  x[i]  x.*  x.&  x.y  x.cast(y)
+// 1.  +x  -x  ^x  *x  not x  size_of x  alignment_of x
+// 2.  +  -  *  /  %  &  |  ^  <<  >>
+// 3.  ==  !=  <=  >=  <  >
+// 4.  and
+// 5.  or
+// 6.  =  +=  -=  *=  /=  %=  &=  |=  ^=  <<=  >>=
+// 7.  :
+// 8.  c_name x y   c_extern x   c_typedef x
+
+parse_expression : (parser: *Parser, minimal_precedence: u64) -> *Ast_Node
+{
+  lhs: *Ast_Node;
+  
+  primary_kind : s64;
+  prefix_kind  : s64;
+  prefix_precedence : u64; prefix_precedence = 0x100;
+  
+       if parser_inspect(parser, `token name`     )  primary_kind = `node primary name`;
+  else if parser_inspect(parser, `token null`     )  primary_kind = `node primary null`;
+  else if parser_inspect(parser, `token string`   )  primary_kind = `node primary string`;
+  else if parser_inspect(parser, `token String`   )  primary_kind = `node primary String`;
+  else if parser_inspect(parser, `token void`     )  primary_kind = `node primary void`;
+  else if parser_inspect(parser, `token u64`      )  primary_kind = `node primary u64`;
+  else if parser_inspect(parser, `token u32`      )  primary_kind = `node primary u32`;
+  else if parser_inspect(parser, `token u16`      )  primary_kind = `node primary u16`;
+  else if parser_inspect(parser, `token u8`       )  primary_kind = `node primary u8`;
+  else if parser_inspect(parser, `token s64`      )  primary_kind = `node primary s64`;
+  else if parser_inspect(parser, `token s32`      )  primary_kind = `node primary s32`;
+  else if parser_inspect(parser, `token s16`      )  primary_kind = `node primary s16`;
+  else if parser_inspect(parser, `token s8`       )  primary_kind = `node primary s8`;
+  else if parser_inspect(parser, `token __dbgpos` )  primary_kind = `node primary __dbgpos`;
+  else if parser_inspect(parser, `token integer`  )  primary_kind = `node primary integer`;
+  else if parser_inspect(parser, `token character`)  primary_kind = `node primary character`;
+  else if parser_inspect(parser, `token +`           )  prefix_kind = `node unary +`;
+  else if parser_inspect(parser, `token -`           )  prefix_kind = `node unary -`;
+  else if parser_inspect(parser, `token ^`           )  prefix_kind = `node unary ^`;
+  else if parser_inspect(parser, `token *`           )  prefix_kind = `node unary *`;
+  else if parser_inspect(parser, `token not`         )  prefix_kind = `node unary not`;
+  else if parser_inspect(parser, `token size_of`     )  prefix_kind = `node unary size_of`;
+  else if parser_inspect(parser, `token alignment_of`)  prefix_kind = `node unary alignment_of`;
+  
+  if primary_kind
+  {
+    parser_proceed(parser);
+    lhs = ast_create_node(primary_kind, parser_at(parser, -1));
+  }
+  else if prefix_kind
+  {
+    parser_proceed(parser);
+    lhs = ast_create_node(prefix_kind, parser_at(parser, -1));
+    lhs.expr_0 = parse_expression(parser, prefix_precedence);
+  }
+  else if parser_accept(parser, `token struct`)
+  {
+    lhs = ast_create_node(`node struct`, parser_at(parser, -1));
+    
+    {
+      members_con : Construction; members_con = construction_begin(construction_arena);
+      
+      parser_expect(parser, `token {`, "the openning curly brace '{' of the struct");
+      
+      while parser_tokens_left(parser) > 0 and not parser_inspect(parser, `token }`)
+      {
+        member : *Ast_Node; member = parse_expression(parser, 0);
+        parser_expect(parser, `token ;`, "the semicolon ';' after the member declaration");
+        arena_push_copy(members_con.arena, size_of(*Ast_Node), member.&);
+      }
+      
+      parser_expect(parser, `token }`, "the closing curly brace '}' of the struct");
+      
+      lhs.num_items = construction_get_size(members_con) / size_of(*Ast_Node);
+      lhs.items = construction_to_eternal_then_end(members_con);
+    }
+  }
+  else if parser_accept(parser, `token c_extern`)
+  {
+    token_c_extern : *Token; token_c_extern = parser_at(parser, -1);
+    lhs = parse_expression(parser, 0);
+    
+    if lhs.node_kind != `node binary :`  complain(0, lhs.token, "not a declaration after c_extern");
+    
+    lhs.token_c_extern = token_c_extern;
+  }
+  else if parser_accept(parser, `token c_typedef`)
+  {
+    token_c_typedef : *Token; token_c_typedef = parser_at(parser, -1);
+    lhs = parse_expression(parser, 0);
+    
+    if lhs.node_kind != `node binary :`  complain(0, lhs.token, "not a declaration after c_typedef");
+    
+    lhs.token_c_typedef = token_c_typedef;
+  }
+  else if parser_accept(parser, `token c_name`)
+  {
+    token_c_name : *Token; token_c_name = parser_expect(parser, `token name`, "the C name");
+    lhs = parse_expression(parser, 0);
+    
+    if lhs.node_kind != `node binary :`  complain(0, lhs.token, "not a declaration after c_name");
+    
+    lhs.token_c_name = token_c_name;
+  }
+  else
+  {
+    function : *Ast_Node;
+    
+    token : *Token; token = parser_expect(parser, `token (`, "a primary expression");
+    
+    if parser_accept(parser, `token )`)
+    {
+      function = ast_create_node(`node function type`, token);
+    }
+    else
+    {
+      param0_or_subexpr : *Ast_Node; param0_or_subexpr = parse_expression(parser, 0);
+      
+      if param0_or_subexpr.node_kind == `node binary :`
+      {
+        function = ast_create_node(`node function type`, token);
+        
+        {
+          params_con : Construction; params_con = construction_begin(construction_arena);
+          arena_push_copy(params_con.arena, size_of(*Ast_Node), param0_or_subexpr.&);
+          
+          while parser_accept(parser, `token ,`)
+          {
+            if parser_inspect(parser, `token )`)  break;
+            
+            param : *Ast_Node; param = parse_expression(parser, 0);
+            arena_push_copy(params_con.arena, size_of(*Ast_Node), param.&);
+          }
+          
+          parser_expect(parser, `token )`, "the closing parenthesis ')' of the function type");
+          
+          function.num_items = construction_get_size(params_con) / size_of(*Ast_Node);
+          function.items = construction_to_eternal_then_end(params_con);
+        }
+      }
+      else
+      {
+        lhs = param0_or_subexpr;
+        parser_expect(parser, `token )`, "the closing parenthesis ')' of the sub-expression");
+      }
+    }
+    
+    if (function)
+    {
+      function.token = parser_expect(parser, `token ->`, "the arrow '->' in the function type");
+      function.expr_0 = parse_expression(parser, 0);
+      lhs = function;
+    }
+  }
+  
+  c_for ;;;
+  {
+    binary_kind   : s64;
+    postfix_kind  : s64;
+    precedence    : u64;
+    right_to_left : u64;
+    
+         if parser_inspect(parser, `token .`)  { binary_kind = `node binary .`; precedence = 0x110; }
+    //
+    else if parser_inspect(parser, `token +` )  { binary_kind = `node binary +` ; precedence = 0x070; }
+    else if parser_inspect(parser, `token -` )  { binary_kind = `node binary -` ; precedence = 0x070; }
+    else if parser_inspect(parser, `token *` )  { binary_kind = `node binary *` ; precedence = 0x070; }
+    else if parser_inspect(parser, `token /` )  { binary_kind = `node binary /` ; precedence = 0x070; }
+    else if parser_inspect(parser, `token %` )  { binary_kind = `node binary %` ; precedence = 0x070; }
+    else if parser_inspect(parser, `token &` )  { binary_kind = `node binary &` ; precedence = 0x070; }
+    else if parser_inspect(parser, `token ^` )  { binary_kind = `node binary ^` ; precedence = 0x070; }
+    else if parser_inspect(parser, `token |` )  { binary_kind = `node binary |` ; precedence = 0x070; }
+    else if parser_inspect(parser, `token <<`)  { binary_kind = `node binary <<`; precedence = 0x070; }
+    else if parser_inspect(parser, `token >>`)  { binary_kind = `node binary >>`; precedence = 0x070; }
+    //
+    else if parser_inspect(parser, `token ==`)  { binary_kind = `node binary ==`; precedence = 0x060; }
+    else if parser_inspect(parser, `token !=`)  { binary_kind = `node binary !=`; precedence = 0x060; }
+    else if parser_inspect(parser, `token <=`)  { binary_kind = `node binary <=`; precedence = 0x060; }
+    else if parser_inspect(parser, `token >=`)  { binary_kind = `node binary >=`; precedence = 0x060; }
+    else if parser_inspect(parser, `token <` )  { binary_kind = `node binary <` ; precedence = 0x060; }
+    else if parser_inspect(parser, `token >` )  { binary_kind = `node binary >` ; precedence = 0x060; }
+    //
+    else if parser_inspect(parser, `token and`)  { binary_kind = `node binary and`; precedence = 0x050; }
+    //
+    else if parser_inspect(parser, `token or`)  { binary_kind = `node binary or`; precedence = 0x040; }
+    //
+    else if parser_inspect(parser, `token =`  )  { binary_kind = `node binary =`  ; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token +=` )  { binary_kind = `node binary +=` ; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token -=` )  { binary_kind = `node binary -=` ; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token *=` )  { binary_kind = `node binary *=` ; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token /=` )  { binary_kind = `node binary /=` ; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token %=` )  { binary_kind = `node binary %=` ; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token &=` )  { binary_kind = `node binary &=` ; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token ^=` )  { binary_kind = `node binary ^=` ; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token |=` )  { binary_kind = `node binary |=` ; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token <<=`)  { binary_kind = `node binary <<=`; precedence = 0x030; right_to_left = 1; }
+    else if parser_inspect(parser, `token >>=`)  { binary_kind = `node binary >>=`; precedence = 0x030; right_to_left = 1; }
+    //
+    else if parser_inspect(parser, `token :`)  { binary_kind = `node binary :`; precedence = 0x010; }
+    //
+    else if parser_inspect(parser, `token (` )  { postfix_kind = `node function call`; precedence = 0x110; }
+    else if parser_inspect(parser, `token [` )  { postfix_kind = `node binary index` ; precedence = 0x110; }
+    else if parser_inspect(parser, `token .*`)  { postfix_kind = `node unary .*`     ; precedence = 0x110; }
+    else if parser_inspect(parser, `token .&`)  { postfix_kind = `node unary .&`     ; precedence = 0x110; }
+    
+    
+    if binary_kind == `node binary .` and parser_safe_at(parser, 1).token_kind == `token cast`
+    {
+      if precedence < minimal_precedence  break;
+      
+      parser_proceed(parser);
+      parser_proceed(parser);
+      
+      new_lhs : *Ast_Node; new_lhs = ast_create_node(`node binary cast`, parser_at(parser, -1));
+      new_lhs.expr_0 = lhs;
+      new_lhs.expr_1 = parse_expression(parser, 0x200);
+      lhs = new_lhs;
+    }
+    else if binary_kind
+    {
+      if precedence < minimal_precedence  break;
+      
+      parser_proceed(parser);
+      new_lhs : *Ast_Node; new_lhs = ast_create_node(binary_kind, parser_at(parser, -1));
+      new_lhs.expr_0 = lhs;
+      new_lhs.expr_1 = parse_expression(parser, precedence + not(right_to_left));
+      lhs = new_lhs;
+      
+      if binary_kind == `node binary :`
+      {
+        if new_lhs.expr_0.node_kind != `node primary name`
+          complain(0, new_lhs.expr_0.token, "not a name in the declaration");
+      }
+    }
+    else if postfix_kind
+    {
+      if precedence < minimal_precedence  break;
+      
+      parser_proceed(parser);
+      new_lhs : *Ast_Node; new_lhs = ast_create_node(postfix_kind, parser_at(parser, -1));
+      new_lhs.expr_0 = lhs;
+      lhs = new_lhs;
+      
+      if postfix_kind == `node function call`
+      {
+        args_con : Construction; args_con = construction_begin(construction_arena);
+        can_continue : u64; can_continue = 1;
+        
+        while parser_tokens_left(parser) > 0 and not parser_inspect(parser, `token )`) and can_continue
+        {
+          arg : *Ast_Node; arg = parse_expression(parser, 0);
+          can_continue = (parser_accept(parser, `token ,`) != null);
+          arena_push_copy(args_con.arena, size_of(*Ast_Node), arg.&);
+        }
+        
+        parser_expect(parser, `token )`, "the closing parenthesis ')' of the function call");
+        
+        new_lhs.num_items = construction_get_size(args_con) / size_of(*Ast_Node);
+        new_lhs.items = construction_to_eternal_then_end(args_con);
+      }
+      else if postfix_kind == `node binary index`
+      {
+        new_lhs.expr_1 = parse_expression(parser, 0);
+        error_assert(__dbgpos, new_lhs.expr_1.node_kind != `node binary :`);
+        parser_expect(parser, `token ]`, "the closing bracket ']' of the index operator");
+      }
+    }
+    else
+    {
+      break;
+    }
+  }
+  
+  debug_assert(__dbgpos, lhs != null);
+  return lhs;
+}
+
+parse_statement : (parser: *Parser) -> *Ast_Node
+{
+  stmt : *Ast_Node;
+  
+  if parser_accept(parser, `token {`)
+  {
+    stmt = ast_create_node(`node statement list`, parser_at(parser, -1));
+    substmts_con : Construction; substmts_con = construction_begin(construction_arena);
+    
+    while parser_tokens_left(parser) > 0 and not parser_inspect(parser, `token }`)
+    {
+      substmt : *Ast_Node; substmt = parse_statement(parser);
+      arena_push_copy(substmts_con.arena, size_of(*Ast_Node), substmt.&);
+    }
+    
+    parser_expect(parser, `token }`, "the closing curly brace '}' for the statement list");
+    
+    stmt.num_items = construction_get_size(substmts_con) / size_of(*Ast_Node);
+    stmt.items = construction_to_eternal_then_end(substmts_con);
+  }
+  else if parser_accept(parser, `token if`)
+  {
+    stmt = ast_create_node(`node statement if-else`, parser_at(parser, -1));
+    
+    stmt.expr_0 = parse_expression(parser, 0);
+    stmt.stmt_0 = parse_statement(parser);
+    error_assert(__dbgpos, stmt.stmt_0.node_kind != `node binary :`);
+    
+    if parser_accept(parser, `token else`)
+    {
+      stmt.stmt_1 = parse_statement(parser);
+      error_assert(__dbgpos, stmt.stmt_1.node_kind != `node binary :`);
+    }
+  }
+  else if parser_accept(parser, `token while`)
+  {
+    stmt = ast_create_node(`node statement while`, parser_at(parser, -1));
+    
+    stmt.expr_0 = parse_expression(parser, 0);
+    stmt.stmt_0 = parse_statement(parser);
+    error_assert(__dbgpos, stmt.stmt_0.node_kind != `node binary :`);
+  }
+  else if parser_accept(parser, `token do`)
+  {
+    stmt = ast_create_node(`node statement do-while`, parser_at(parser, -1));
+    
+    stmt.stmt_0 = parse_statement(parser);
+    error_assert(__dbgpos, stmt.stmt_0.node_kind != `node binary :`);
+    
+    parser_expect(parser, `token while`, "the 'while' keyword in the do-while loop");
+    stmt.expr_0 = parse_expression(parser, 0);
+    parser_expect(parser, `token ;`, "the semicolon ';' after the condition");
+  }
+  else if parser_accept(parser, `token c_for`)
+  {
+    stmt = ast_create_node(`node statement c_for`, parser_at(parser, -1));
+    
+    if not parser_inspect(parser, `token ;`)
+    {
+      stmt.expr_0 = parse_expression(parser, 0);
+      error_assert(__dbgpos, stmt.expr_0.node_kind == `node binary :`);
+    }
+    
+    parser_expect(parser, `token ;`, "the semicolon ';' after the init in c_for");
+    
+    if not parser_inspect(parser, `token ;`)
+    {
+      stmt.expr_1 = parse_expression(parser, 0);
+      error_assert(__dbgpos, stmt.expr_1.node_kind != `node binary :`);
+    }
+    
+    parser_expect(parser, `token ;`, "the semicolon ';' after the condition in c_for");
+    
+    if not parser_inspect(parser, `token ;`)
+    {
+      stmt.expr_2 = parse_expression(parser, 0);
+      error_assert(__dbgpos, stmt.expr_2.node_kind != `node binary :`);
+    }
+    
+    parser_expect(parser, `token ;`, "the semicolon ';' after the reinit in c_for");
+    
+    stmt.stmt_0 = parse_statement(parser);
+    error_assert(__dbgpos, stmt.stmt_0.node_kind != `node binary :`);
+  }
+  else if parser_accept(parser, `token break`)
+  {
+    stmt = ast_create_node(`node statement break`, parser_at(parser, -1));
+    parser_expect(parser, `token ;`, "the semicolon ';' after the break");
+  }
+  else if parser_accept(parser, `token continue`)
+  {
+    stmt = ast_create_node(`node statement continue`, parser_at(parser, -1));
+    parser_expect(parser, `token ;`, "the semicolon ';' after the continue");
+  }
+  else if parser_accept(parser, `token return`)
+  {
+    stmt = ast_create_node(`node statement return`, parser_at(parser, -1));
+    
+    stmt.expr_0 = parse_expression(parser, 0);
+    error_assert(__dbgpos, stmt.expr_0.node_kind != `node binary :`);
+    parser_expect(parser, `token ;`, "the semicolon ';' after the return");
+  }
+  else
+  {
+    stmt = parse_expression(parser, 0);
+    parser_expect(parser, `token ;`, "the semicolon ';' after the expression");
+  }
+  
+  debug_assert(__dbgpos, stmt != null);
+  return stmt;
+}
+
+parser_proceed : (parser: *Parser) -> void
+{
+  debug_assert(__dbgpos, parser != null);
+  
+  if parser.index < parser.tokens.count  parser.index += 1;
+}
+
+parser_inspect : (parser: *Parser, token_kind: s64) -> *Token
+{
+  debug_assert(__dbgpos, parser != null);
+  
+  curr : *Token; curr = parser_safe_at(parser, 0);
+  if curr.token_kind != token_kind  return null;
+  
+  return curr;
+}
+
+parser_accept : (parser: *Parser, token_kind: s64) -> *Token
+{
+  debug_assert(__dbgpos, parser != null);
+  
+  curr : *Token; curr = parser_safe_at(parser, 0);
+  if curr.token_kind != token_kind  return null;
+  
+  parser_proceed(parser);
+  return curr;
+}
+
+parser_expect : (parser: *Parser, token_kind: s64, what: String) -> *Token
+{
+  debug_assert(__dbgpos, parser != null);
+  debug_assert(__dbgpos, what.at != null or what.size == 0);
+  
+  curr : *Token; curr = parser_safe_at(parser, 0);
+  
+  if curr.token_kind != token_kind
+  {
+    message_con : Construction; message_con = construction_begin(construction_arena);
+  
+    arena_print_string(message_con.arena, "expected ");
+    arena_print_string(message_con.arena, what);
+    
+    message : String;
+    message.at = message_con.content;
+    message.size = construction_get_size(message_con);
+    complain(0, curr, message);
+    
+    construction_end(message_con);
+  }
+  
+  parser_proceed(parser);
+  return curr;
+}
+
+ast_create_node : (node_kind_opt: s64, token_opt: *Token) -> *Ast_Node
+{
+  result : *Ast_Node; result = eternal_push(size_of(Ast_Node));
+  result.node_kind = node_kind_opt;
+  result.token     = token_opt;
+  return result;
+}
+
+parser_tokens_left : (parser: *Parser) -> s64
+{
+  debug_assert(__dbgpos, parser != null);
+  return parser.tokens.count - parser.index;
+}
+
+parser_at : (parser: *Parser, relative_index: s64) -> *Token
+{
+  debug_assert(__dbgpos, parser != null);
+
+  absolute_index: s64; absolute_index = parser.index + relative_index;
+  
+  debug_assert(__dbgpos, absolute_index >= 0);
+  debug_assert(__dbgpos, absolute_index < parser.tokens.count);
+  
+  return parser.tokens.at + absolute_index;
+}
+
+parser_safe_at : (parser: *Parser, relative_index: s64) -> *Token
+{
+  debug_assert(__dbgpos, parser != null);
+  
+  absolute_index: s64; absolute_index = parser.index + relative_index;
+  
+  result : *Token;
+  
+  if absolute_index < 0
+  {
+    result = parser.tokens.before_first;
+  }
+  else if absolute_index >= parser.tokens.count
+  {
+    result = parser.tokens.after_last;
+  }
+  else
+  {
+    result = parser_at(parser, relative_index);
+  }
+  
+  return result;
+}
+
+c_enum
+{
+  COMPLAIN_FATAL_ERROR;
+  COMPLAIN_NOTE;
+  COMPLAIN_WARNING;
+  COMPLAIN_ERROR;
+  COMPLAIN_ENUM_COUNT;
+}
+
+complain : (complain_kind: s64, token_opt: *Token, message: String) -> void
+{
+  debug_assert(__dbgpos, message.at != null or message.size == 0);
+  debug_assert(__dbgpos, complain_kind < COMPLAIN_ENUM_COUNT);
+  
+  {
+    text_con : Construction; text_con = construction_begin(construction_arena);
+    
+    row : s64;
+    col : s64;
+    
+    if token_opt
+    {
+      row = 1;
+      col = 1;
+      
+      c_for i: s64; token_opt.source.string.at + i != token_opt.string.at; i += 1;
+      {
+        if token_opt.source.string.at[i] == '\n'
+        {
+          row += 1;
+          col = 0;
+        }
+      
+        col += 1;
+      }
+      
+      arena_print_string(text_con.arena, "\1B[93m");
+      arena_print_string(text_con.arena, token_opt.source.name);
+      arena_print_string(text_con.arena, ":");
+      arena_print_s64(text_con.arena, row, 10, 0);
+      arena_print_string(text_con.arena, ":");
+      arena_print_s64(text_con.arena, col, 10, 0);
+      arena_print_string(text_con.arena, ": ");
+    }
+    
+    kind_as_color  : String;
+    kind_as_string : String;
+    
+    if complain_kind == COMPLAIN_ERROR or complain_kind == COMPLAIN_FATAL_ERROR
+    {
+      kind_as_color  = "\1B[91m";
+      kind_as_string = "\1B[91merror:\1B[0m";
+    }
+    else if complain_kind == COMPLAIN_NOTE
+    {
+      kind_as_color  = "\1B[96m";
+      kind_as_string = "\1B[96mnote:\1B[0m";
+    }
+    else if complain_kind == COMPLAIN_WARNING
+    {
+      kind_as_color  = "\1B[95m";
+      kind_as_string = "\1B[95mwarning:\1B[0m";
+    }
+    
+    arena_print_string(text_con.arena, kind_as_string);
+    arena_print_string(text_con.arena, " ");
+    arena_print_string(text_con.arena, message);
+    arena_print_string(text_con.arena, "\n");
+    
+    if token_opt
+    {
+      arena_print_string(text_con.arena, " ");
+      size_0 : s64; size_0 = arena_print_s64(text_con.arena, row, 10, 0);
+      arena_print_string(text_con.arena, " | ");
+      
+      line : *u8; line = token_opt.string.at - (col - 1);
+      line_size : s64;
+      
+      while line[line_size] != '\0' and line[line_size] != '\n'
+        line_size += 1;
+      
+      size_1 : s64; size_1 = arena_print_bytes(text_con.arena, col - 1, line);
+      arena_print_string(text_con.arena, kind_as_color);
+      
+      size_2 : s64; size_2 = arena_print_string(text_con.arena, token_opt.string);
+      arena_print_string(text_con.arena, "\1B[0m");
+      
+      arena_print_bytes(text_con.arena, line_size - (size_1 + size_2), line + (size_1 + size_2));
+      
+      arena_print_string(text_con.arena, "\n");
+      arena_print_row(text_con.arena, size_0 + 2, ' ');
+      arena_print_string(text_con.arena, "|");
+      arena_print_row(text_con.arena, col, ' ');
+      
+      arena_print_string(text_con.arena, kind_as_color);
+      arena_print_string(text_con.arena, "^");
+      
+      if token_opt.string.size > 1  arena_print_row(text_con.arena, token_opt.string.size - 1, '~');
+      
+      arena_print_string(text_con.arena, "\1B[0m\n");
+    }
+    
+    console_error_print_bytes(construction_get_size(text_con), text_con.content);
+    
+    construction_end(text_con);
+  }
+  
+  if complain_kind == COMPLAIN_FATAL_ERROR  process_exit(1);
+}
+
+source_tokenize : (source: *Source) -> void
+{
+  debug_assert(__dbgpos, source != null);
+  debug_assert(__dbgpos, source.tokens.at == null);
+  
+  tokens_con : Construction; tokens_con = construction_begin(construction_arena);
+  
+  cp : *u8; cp = source.string.at;
+  cp_end : *u8; cp_end = source.string.at + source.string.size;
+  
+  c_for ;;;
+  {
+    token : Token;
+    
+    token.source = source;
+  
+    // skip spaces and comments
+    c_for ;;;
+    {
+      while cp_end - cp >= 1 and ascii_is_space(cp.*)  cp += 1;
+      
+      if cp_end - cp >= 2 and cp[0] == '/' and cp[1] == '/'
+      {
+        while cp_end - cp >= 1 and cp.* != '\n'
+          cp += 1;
+      }
+      else if cp_end - cp >= 2 and cp[0] == '/' and cp[1] == '*'
+      {
+        level : s64;
+        
+        token.string.at = cp;
+        token.string.size = 2;
+        
+        c_for ;;;
+        {
+          if cp_end - cp >= 2 and cp[0] == '/' and cp[1] == '*'
+          {
+            cp += 2;
+            level += 1;
+          }
+          else if cp_end - cp >= 2 and cp[0] == '*' and cp[1] == '/'
+          {
+            cp += 2;
+            level -= 1;
+            
+            if level <= 0  break;
+          }
+          else if cp_end - cp >= 1
+          {
+            cp += 1;
+          }
+          else
+          {
+            complain(0, token.&, "endless comment");
+          }
+        }
+      }
+      else
+      {
+        break;
+      }
+    }
+    
+    //
+    token_beg  : *u8; token_beg = cp;
+    token_kind : s64;
+    
+    if cp_end - cp <= 0
+    {
+      break;
+    }
+    else if ascii_is_decimal_digit(cp.*)
+    {
+      token_kind = `token integer`;
+      cp += 1;
+      
+      while cp_end - cp >= 1 and ascii_is_letter_or_digit(cp.*) or cp.* == '_'
+        cp += 1;
+    }
+    else if ascii_is_letter(cp.*) or cp.* == '_'
+    {
+      token_kind = `token name`;
+      cp += 1;
+      
+      while cp_end - cp >= 1 and ascii_is_letter_or_digit(cp.*) or cp.* == '_'
+        cp += 1;
+      
+      size : s64; size = cp - token_beg;
+      
+      if size == 2
+      {
+             if memory_equal(token_beg, "u8".at, size)  token_kind = `token u8`;
+        else if memory_equal(token_beg, "s8".at, size)  token_kind = `token s8`;
+        else if memory_equal(token_beg, "or".at, size)  token_kind = `token or`;
+        else if memory_equal(token_beg, "if".at, size)  token_kind = `token if`;
+        else if memory_equal(token_beg, "do".at, size)  token_kind = `token do`;
+      }
+      else if size == 3
+      {
+             if memory_equal(token_beg, "u64".at, size)  token_kind = `token u64`;
+        else if memory_equal(token_beg, "u32".at, size)  token_kind = `token u32`;
+        else if memory_equal(token_beg, "u16".at, size)  token_kind = `token u16`;
+        else if memory_equal(token_beg, "s64".at, size)  token_kind = `token s64`;
+        else if memory_equal(token_beg, "s32".at, size)  token_kind = `token s32`;
+        else if memory_equal(token_beg, "s16".at, size)  token_kind = `token s16`;
+        else if memory_equal(token_beg, "f64".at, size)  token_kind = `token f64`;
+        else if memory_equal(token_beg, "f32".at, size)  token_kind = `token f32`;
+        else if memory_equal(token_beg, "and".at, size)  token_kind = `token and`;
+        else if memory_equal(token_beg, "not".at, size)  token_kind = `token not`;
+      }
+      else if size == 4
+      {
+             if memory_equal(token_beg, "void".at, size)  token_kind = `token void`;
+        else if memory_equal(token_beg, "null".at, size)  token_kind = `token null`;
+        else if memory_equal(token_beg, "else".at, size)  token_kind = `token else`;
+        else if memory_equal(token_beg, "enum".at, size)  token_kind = `token enum`;
+        else if memory_equal(token_beg, "cast".at, size)  token_kind = `token cast`;
+      }
+      else if size == 5
+      {
+             if memory_equal(token_beg, "while".at, size)  token_kind = `token while`;
+        else if memory_equal(token_beg, "break".at, size)  token_kind = `token break`;
+        else if memory_equal(token_beg, "unoin".at, size)  token_kind = `token unoin`;
+        else if memory_equal(token_beg, "c_for".at, size)  token_kind = `token c_for`;
+      }
+      else if size == 6
+      {
+              if memory_equal(token_beg, "return".at, size)  token_kind = `token return`;
+         else if memory_equal(token_beg, "c_name".at, size)  token_kind = `token c_name`;
+         else if memory_equal(token_beg, "struct".at, size)  token_kind = `token struct`;
+         else if memory_equal(token_beg, "c_load".at, size)  token_kind = `token c_load`;
+         else if memory_equal(token_beg, "c_enum".at, size)  token_kind = `token c_enum`;
+         else if memory_equal(token_beg, "String".at, size)  token_kind = `token String`;
+      }
+      else if size == 7
+      {
+             if memory_equal(token_beg, "size_of".at, size)  token_kind = `token size_of`;
+        else if memory_equal(token_beg, "type_of".at, size)  token_kind = `token type_of`;
+      }
+      else if size == 8
+      {
+             if memory_equal(token_beg, "c_extern".at, size)  token_kind = `token c_extern`;
+        else if memory_equal(token_beg, "continue".at, size)  token_kind = `token continue`;
+        else if memory_equal(token_beg, "__dbgpos".at, size)  token_kind = `token __dbgpos`;
+      }
+      else if size == 9
+      {
+        if memory_equal(token_beg, "c_typedef".at, size)  token_kind = `token c_typedef`;
+      }
+      else if size == 12
+      {
+        if memory_equal(token_beg, "alignment_of".at, size)  token_kind = `token alignment_of`;
+      }
+      else if size == 14
+      {
+        if memory_equal(token_beg, "c_include_once".at, size)  token_kind = `token c_include_once`;
+      }
+    }
+    else if cp.* == '"' or cp.* == '\'' or cp.* == '`'
+    {
+      token.string.at = cp;
+      
+           if cp.* == '"'   token_kind = `token string`;
+      else if cp.* == '\''  token_kind = `token character`;
+      else if cp.* == '`'   token_kind = `token name`;
+      
+      end_quote : u64; end_quote = cp.*;
+      cp += 1;
+      
+      num_backslashes : s64;
+      
+      while cp_end - cp >= 1 and cp.* != '\n' and not(cp.* == end_quote and num_backslashes % 2 == 0)
+      {
+        num_backslashes = 0; // TODO: put it inside the c_for's init
+        c_for ; cp.* == '\\'; num_backslashes += 1;
+          cp += 1;
+        
+        if num_backslashes == 0  cp += 1;
+      }
+      
+      if cp_end - cp <= 0 or cp.* == '\n'
+      {
+        token.string.size = cp - token.string.at;
+        complain(0, token.&, "endless text in quotes");
+      }
+      
+      cp += 1;
+    }
+    else
+    {
+      size : s64;
+      
+      if cp_end - cp >= 3
+      {
+        c0 : u64; c0 = cp[0];
+        c1 : u64; c1 = cp[1];
+        c2 : u64; c2 = cp[2];
+      
+             if c0 == '<' and c1 == '<' and c2 == '='  { size = 3; token_kind = `token <<=`; }
+        else if c0 == '>' and c1 == '>' and c2 == '='  { size = 3; token_kind = `token >>=`; }
+      }
+      
+      if size == 0 and cp_end - cp >= 2
+      {
+        c0 : u64; c0 = cp[0];
+        c1 : u64; c1 = cp[1];
+        
+             if c0 == '+' and c1 == '='  { size = 2; token_kind = `token +=`; }
+        else if c0 == '-' and c1 == '='  { size = 2; token_kind = `token -=`; }
+        else if c0 == '*' and c1 == '='  { size = 2; token_kind = `token *=`; }
+        else if c0 == '/' and c1 == '='  { size = 2; token_kind = `token /=`; }
+        else if c0 == '%' and c1 == '='  { size = 2; token_kind = `token %=`; }
+        else if c0 == '&' and c1 == '='  { size = 2; token_kind = `token &=`; }
+        else if c0 == '^' and c1 == '='  { size = 2; token_kind = `token ^=`; }
+        else if c0 == '|' and c1 == '='  { size = 2; token_kind = `token |=`; }
+        else if c0 == '<' and c1 == '='  { size = 2; token_kind = `token <=`; }
+        else if c0 == '>' and c1 == '='  { size = 2; token_kind = `token >=`; }
+        else if c0 == '=' and c1 == '='  { size = 2; token_kind = `token ==`; }
+        else if c0 == '!' and c1 == '='  { size = 2; token_kind = `token !=`; }
+        else if c0 == '<' and c1 == '<'  { size = 2; token_kind = `token <<`; }
+        else if c0 == '>' and c1 == '>'  { size = 2; token_kind = `token >>`; }
+        else if c0 == '-' and c1 == '>'  { size = 2; token_kind = `token ->`; }
+        else if c0 == '.' and c1 == '*'  { size = 2; token_kind = `token .*`; }
+        else if c0 == '.' and c1 == '&'  { size = 2; token_kind = `token .&`; }
+      }
+      
+      if size == 0
+      {
+        c0 : u64; c0 = cp[0];
+        
+             if c0 == '+'  { size = 1; token_kind = `token +`; }
+        else if c0 == '-'  { size = 1; token_kind = `token -`; }
+        else if c0 == '*'  { size = 1; token_kind = `token *`; }
+        else if c0 == '/'  { size = 1; token_kind = `token /`; }
+        else if c0 == '%'  { size = 1; token_kind = `token %`; }
+        else if c0 == '&'  { size = 1; token_kind = `token &`; }
+        else if c0 == '^'  { size = 1; token_kind = `token ^`; }
+        else if c0 == '|'  { size = 1; token_kind = `token |`; }
+        else if c0 == '<'  { size = 1; token_kind = `token <`; }
+        else if c0 == '>'  { size = 1; token_kind = `token >`; }
+        else if c0 == '='  { size = 1; token_kind = `token =`; }
+        else if c0 == ';'  { size = 1; token_kind = `token ;`; }
+        else if c0 == '.'  { size = 1; token_kind = `token .`; }
+        else if c0 == ':'  { size = 1; token_kind = `token :`; }
+        else if c0 == ','  { size = 1; token_kind = `token ,`; }
+        else if c0 == '('  { size = 1; token_kind = `token (`; }
+        else if c0 == ')'  { size = 1; token_kind = `token )`; }
+        else if c0 == '{'  { size = 1; token_kind = `token {`; }
+        else if c0 == '}'  { size = 1; token_kind = `token }`; }
+        else if c0 == '['  { size = 1; token_kind = `token [`; }
+        else if c0 == ']'  { size = 1; token_kind = `token ]`; }
+      }
+      
+      if size == 0
+      {
+        token.string.at = cp;
+        token.string.size = 1;
+        complain(0, token.&, "invalid token");
+      }
+      
+      cp += size;
+    }
+    
+    debug_assert(__dbgpos, token_kind != 0);
+    
+    token.string.at = token_beg;
+    token.string.size = cp - token_beg;
+    token.token_kind = token_kind;
+    
+    arena_push_copy(tokens_con.arena, size_of(Token), token.&);
+  }
+  
+  source.tokens.count = construction_get_size(tokens_con) / size_of(Token);
+  source.tokens.at    = construction_to_eternal_then_end(tokens_con);
+  
+  error_assert(__dbgpos, source.string.size != 0);
+  
+  source.tokens.before_first = eternal_push(size_of(Token));
+  source.tokens.before_first.source = source;
+  source.tokens.before_first.string.at = source.string.at;
+  source.tokens.before_first.token_kind = `token invalid`;
+  
+  source.tokens.after_last = eternal_push(size_of(Token));
+  source.tokens.after_last.source = source;
+  source.tokens.after_last.string.at = source.string.at + source.string.size - 1;
+  source.tokens.after_last.token_kind = `token invalid`;
+}
+
+c_enum // Token.token_kind
+{
+  // misc.:
+  `token invalid`;
+  `token integer`;
+  `token string`;
+  `token character`;
+  `token name`;
+  // keywords:
+  `token u8`;
+  `token s8`;
+  `token or`;
+  `token if`;
+  `token do`;
+  `token u64`;
+  `token u32`;
+  `token u16`;
+  `token s64`;
+  `token s32`;
+  `token s16`;
+  `token f64`;
+  `token f32`;
+  `token and`;
+  `token not`;
+  `token void`;
+  `token null`;
+  `token else`;
+  `token enum`;
+  `token cast`;
+  `token while`;
+  `token break`;
+  `token unoin`;
+  `token c_for`;
+  `token return`;
+  `token c_name`;
+  `token struct`;
+  `token c_load`;
+  `token c_enum`;
+  `token String`;
+  `token size_of`;
+  `token type_of`;
+  `token c_extern`;
+  `token continue`;
+  `token __dbgpos`;
+  `token c_typedef`;
+  `token alignment_of`;
+  `token c_include_once`;
+  // punctuators:
+  `token <<=`;
+  `token >>=`;
+  `token +=`;
+  `token -=`;
+  `token *=`;
+  `token /=`;
+  `token %=`;
+  `token &=`;
+  `token ^=`;
+  `token |=`;
+  `token <=`;
+  `token >=`;
+  `token ==`;
+  `token !=`;
+  `token <<`;
+  `token >>`;
+  `token ->`;
+  `token .*`;
+  `token .&`;
+  `token +`;
+  `token -`;
+  `token *`;
+  `token /`;
+  `token %`;
+  `token &`;
+  `token ^`;
+  `token |`;
+  `token <`;
+  `token >`;
+  `token =`;
+  `token ;`;
+  `token .`;
+  `token :`;
+  `token ,`;
+  `token (`;
+  `token )`;
+  `token {`;
+  `token }`;
+  `token [`;
+  `token ]`;
+}
+
+c_enum // Ast_Node.node_kind
+{
+  `node invalid`;
+  //
+  `node statement root`;
+  `node statement list`;
+  `node statement return`;
+  `node statement break`;
+  `node statement continue`;
+  `node statement while`;
+  `node statement do-while`;
+  `node statement if-else`;
+  `node statement c_for`;
+  //
+  `node primary name`;
+  `node primary null`;
+  `node primary void`;
+  `node primary u64`;
+  `node primary u32`;
+  `node primary u16`;
+  `node primary u8`;
+  `node primary s64`;
+  `node primary s32`;
+  `node primary s16`;
+  `node primary s8`;
+  `node primary String`;
+  `node primary __dbgpos`;
+  `node primary integer`;
+  `node primary character`;
+  `node primary string`;
+  //
+  `node unary +`;
+  `node unary -`;
+  `node unary ^`;
+  `node unary *`;
+  `node unary not`;
+  `node unary size_of`;
+  `node unary alignment_of`;
+  `node unary .*`;
+  `node unary .&`;
+  //
+  `node binary :`;
+  `node binary +`;
+  `node binary -`;
+  `node binary *`;
+  `node binary /`;
+  `node binary %`;
+  `node binary &`;
+  `node binary ^`;
+  `node binary |`;
+  `node binary <<`;
+  `node binary >>`;
+  `node binary .`;
+  `node binary ==`;
+  `node binary !=`;
+  `node binary <=`;
+  `node binary >=`;
+  `node binary <`;
+  `node binary >`;
+  `node binary index`;
+  `node binary and`;
+  `node binary or`;
+  `node binary =`;
+  `node binary +=`;
+  `node binary -=`;
+  `node binary *=`;
+  `node binary /=`;
+  `node binary %=`;
+  `node binary &=`;
+  `node binary ^=`;
+  `node binary |=`;
+  `node binary <<=`;
+  `node binary >>=`;
+  `node binary cast`;
+  //
+  `node function type`;
+  `node function call`;
+  `node struct`;
+  `node c_enum`;
+  `node c_include_once`;
+}
+
+
+ast_debug_print_to_console_error : (root: *Ast_Node) -> void
+{
+  string_con : Construction; string_con = construction_begin(construction_arena);
+  
+  arena_print_string(string_con.arena, "  AST:\n");
+  ast_debug_print_recursively(root, 0, "root", -1, string_con.arena);
+  arena_print_string(string_con.arena, "\n\n");
+  
+  console_error_print_bytes(construction_get_size(string_con), string_con.content);
+  construction_end(string_con);
+}
+
+ast_debug_print_recursively : (node : *Ast_Node, spaces: u64, title: String, index_opt: s64, result_arena: *Arena) -> void
+{
+  arena_print_row(result_arena, spaces, ' ');
+  
+  if index_opt >= 0
+  {
+    arena_print_string(result_arena, "[");
+    arena_print_s64(result_arena, index_opt, 10, 2);
+    arena_print_string(result_arena, "]  ");
+  }
+  
+  arena_print_string(result_arena, title);
+  arena_print_string(result_arena, "  ");
+  
+  if node != null
+  {
+    if node.node_kind != 0
+    {
+      arena_print_string(result_arena, string_from_node_kind(node.node_kind));
+      arena_print_string(result_arena, "  ");
+    }
+    else
+    {
+      arena_print_string(result_arena, "(ast->kind == 0)  ");
+    }
+    
+    if node.scope.symbols != null
+    {
+      arena_print_string(result_arena, "symbols[");
+      arena_print_s64(result_arena, node.scope.num_symbols, 10, 0);
+      arena_print_string(result_arena, "]  ");
+    }
+    
+    if node.items != null
+    {
+      arena_print_string(result_arena, "items[");
+      arena_print_s64(result_arena, node.num_items, 10, 0);
+      arena_print_string(result_arena, "]  ");
+    }
+    
+    arena_print_string(result_arena, "{ ");
+    
+    if node.token != null
+    {
+      if node.token.string.at != null and node.token.string.size >= 0
+      {
+        arena_print_string(result_arena, "'");
+        arena_print_string(result_arena, node.token.string);
+        arena_print_string(result_arena, "' ");
+      }
+      else
+      {
+        arena_print_string(result_arena, "(node.token is invalid ");
+      }
+      
+      if node.token.token_kind == 0
+        arena_print_string(result_arena, "(node.token.token_kind == 0)");
+    }
+    else
+    {
+      arena_print_string(result_arena, "(node.token == NULL)");
+    }
+    
+    arena_print_string(result_arena, " }  ");
+  }
+  else
+  {
+    arena_print_string(result_arena, "(node == NULL)  ");
+  }
+  
+  arena_print_string(result_arena, "\n");
+  
+  sub_spaces : u64; sub_spaces = spaces + 4;
+  
+  if node != null and node.symbol_by_name != null
+  {
+    symbol : *Symbol; symbol = node.symbol_by_name;
+    
+    arena_print_row(result_arena, sub_spaces, ' ');
+    arena_print_string(result_arena, "symbol_by_name  ");
+    arena_print_string(result_arena, symbol.name_token.string);
+    arena_print_string(result_arena, "  ");
+    arena_print_string(result_arena, symbol.c89_name);
+    arena_print_string(result_arena, "\n");
+  }
+  
+  if node != null
+  {
+    if node.scope.symbols != null
+    {
+      c_for i: s64; i < node.scope.num_symbols; i += 1;
+      {
+        symbol : *Symbol; symbol = node.scope.symbols[i];
+        
+        arena_print_row(result_arena, sub_spaces, ' ');
+        arena_print_string(result_arena, "symbol [");
+        arena_print_s64(result_arena, i, 10, 2);
+        arena_print_string(result_arena, "]  ");
+        arena_print_string(result_arena, symbol.name_token.string);
+        arena_print_string(result_arena, "  ");
+        arena_print_string(result_arena, symbol.c89_name);
+        arena_print_string(result_arena, "\n");
+      }
+    }
+  
+    if node.expr_0 != null  ast_debug_print_recursively(node.expr_0, sub_spaces, "expr_0", -1, result_arena);
+    if node.expr_1 != null  ast_debug_print_recursively(node.expr_1, sub_spaces, "expr_1", -1, result_arena);
+    if node.expr_2 != null  ast_debug_print_recursively(node.expr_2, sub_spaces, "expr_2", -1, result_arena);
+    if node.stmt_0 != null  ast_debug_print_recursively(node.stmt_0, sub_spaces, "stmt_0", -1, result_arena);
+    if node.stmt_1 != null  ast_debug_print_recursively(node.stmt_1, sub_spaces, "stmt_1", -1, result_arena);
+    
+    if node.items != null
+      c_for i: s64; i < node.num_items; i += 1;
+        ast_debug_print_recursively(node.items[i], sub_spaces, "item", i, result_arena);
+  }
+}
+
+
+string_from_node_kind : (node_kind: s64) -> String
+{
+  if node_kind == `node invalid`             return "invalid";
+  if node_kind == `node statement root`      return "statement root";
+  if node_kind == `node statement list`      return "statement list";
+  if node_kind == `node statement return`    return "statement return";
+  if node_kind == `node statement break`     return "statement break";
+  if node_kind == `node statement continue`  return "statement continue";
+  if node_kind == `node statement while`     return "statement while";
+  if node_kind == `node statement do-while`  return "statement do-while";
+  if node_kind == `node statement if-else`   return "statement if-else";
+  if node_kind == `node statement c_for`     return "statement c_for";
+  if node_kind == `node primary name`        return "primary name";
+  if node_kind == `node primary null`        return "primary null";
+  if node_kind == `node primary void`        return "primary void";
+  if node_kind == `node primary u64`         return "primary u64";
+  if node_kind == `node primary u32`         return "primary u32";
+  if node_kind == `node primary u16`         return "primary u16";
+  if node_kind == `node primary u8`          return "primary u8";
+  if node_kind == `node primary s64`         return "primary s64";
+  if node_kind == `node primary s32`         return "primary s32";
+  if node_kind == `node primary s16`         return "primary s16";
+  if node_kind == `node primary s8`          return "primary s8";
+  if node_kind == `node primary __dbgpos`    return "primary __dbgpos";
+  if node_kind == `node primary integer`     return "primary integer";
+  if node_kind == `node primary character`   return "primary character";
+  if node_kind == `node primary string`      return "primary string";
+  if node_kind == `node primary String`      return "primary String";
+  if node_kind == `node unary +`             return "unary +";
+  if node_kind == `node unary -`             return "unary -";
+  if node_kind == `node unary ^`             return "unary ^";
+  if node_kind == `node unary *`             return "unary *";
+  if node_kind == `node unary not`           return "unary not";
+  if node_kind == `node unary size_of`       return "unary size_of";
+  if node_kind == `node unary alignment_of`  return "unary alignment_of";
+  if node_kind == `node unary .*`            return "unary .*";
+  if node_kind == `node unary .&`            return "unary .&";
+  if node_kind == `node binary :`            return "binary :";
+  if node_kind == `node binary +`            return "binary +";
+  if node_kind == `node binary -`            return "binary -";
+  if node_kind == `node binary *`            return "binary *";
+  if node_kind == `node binary /`            return "binary /";
+  if node_kind == `node binary %`            return "binary %";
+  if node_kind == `node binary &`            return "binary &";
+  if node_kind == `node binary ^`            return "binary ^";
+  if node_kind == `node binary |`            return "binary |";
+  if node_kind == `node binary <<`           return "binary <<";
+  if node_kind == `node binary >>`           return "binary >>";
+  if node_kind == `node binary .`            return "binary .";
+  if node_kind == `node binary ==`           return "binary ==";
+  if node_kind == `node binary !=`           return "binary !=";
+  if node_kind == `node binary <=`           return "binary <=";
+  if node_kind == `node binary >=`           return "binary >=";
+  if node_kind == `node binary <`            return "binary <";
+  if node_kind == `node binary >`            return "binary >";
+  if node_kind == `node binary index`        return "binary index";
+  if node_kind == `node binary and`          return "binary and";
+  if node_kind == `node binary or`           return "binary or";
+  if node_kind == `node binary =`            return "binary =";
+  if node_kind == `node binary +=`           return "binary +=";
+  if node_kind == `node binary -=`           return "binary -=";
+  if node_kind == `node binary *=`           return "binary *=";
+  if node_kind == `node binary /=`           return "binary /=";
+  if node_kind == `node binary %=`           return "binary %=";
+  if node_kind == `node binary &=`           return "binary &=";
+  if node_kind == `node binary ^=`           return "binary ^=";
+  if node_kind == `node binary |=`           return "binary |=";
+  if node_kind == `node binary <<=`          return "binary <<=";
+  if node_kind == `node binary >>=`          return "binary >>=";
+  if node_kind == `node binary cast`         return "binary cast";
+  if node_kind == `node function type`       return "function type";
+  if node_kind == `node function call`       return "function call";
+  if node_kind == `node struct`              return "struct";
+  if node_kind == `node c_enum`              return "c_enum";
+  if node_kind == `node c_include_once`      return "c_include_once";
+  
+  return "UNKNOWN NODE KIND!!!!!!!!!!!!!!!!!!!!!!";
+}
+
+
+

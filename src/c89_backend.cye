@@ -1,0 +1,844 @@
+// c89_backend.cye
+
+c89_sorted_typedefs_arena : *Arena;
+
+c_typedef C89_Context : struct
+{
+  decl_arena : *Arena;
+  impl_arena : *Arena;
+};
+
+c89_declaration_from_type_and_center : (type: *Type, center: String, string_arena: *Arena) -> String
+{
+  result : String;
+  type_kind : s64; type_kind = type.type_kind;
+  
+  simple_type_string : String;
+  
+       if type_kind == TYPE_U64   simple_type_string = "u64";
+  else if type_kind == TYPE_U32   simple_type_string = "u32";
+  else if type_kind == TYPE_U16   simple_type_string = "u16";
+  else if type_kind == TYPE_U8    simple_type_string = "u8";
+  else if type_kind == TYPE_S64   simple_type_string = "s64";
+  else if type_kind == TYPE_S32   simple_type_string = "s32";
+  else if type_kind == TYPE_S16   simple_type_string = "s16";
+  else if type_kind == TYPE_S8    simple_type_string = "s8";
+  else if type_kind == TYPE_VOID  simple_type_string = "void";
+  
+  if simple_type_string.at
+  {
+    result.at = arena_get_top(string_arena);
+    arena_print_string(string_arena, simple_type_string);
+    arena_print_string(string_arena, " ");
+    arena_print_string(string_arena, center);
+    result.size = arena_get_top(string_arena).cast(*u8) - result.at;
+  }
+  else if type_kind == TYPE_POINTER_TO
+  {
+    new_center : String; new_center.at = arena_get_top(string_arena);
+    arena_print_string(string_arena, "(*");
+    arena_print_string(string_arena, center);
+    arena_print_string(string_arena, ")");
+    new_center.size = arena_get_top(string_arena).cast(*u8) - new_center.at;
+    
+    result = c89_declaration_from_type_and_center(type.sub_type, new_center, string_arena);
+  }
+  else if type_kind == TYPE_FUNCTION
+  {
+    list : String;
+    
+    c_for i: s64; i < type.num_params; i += 1;
+    {
+      param : Name_And_Type; param = type.params[i];
+      
+      debug_assert(__dbgpos, param.name.at != null);
+    
+      param_center : String; param_center.at = arena_get_top(string_arena);
+      
+      debug_assert(__dbgpos, param.c89_name.at != null);
+      arena_print_string(string_arena, param.c89_name);
+      
+      if g_option_print_actual_names
+      {
+        arena_print_string(string_arena, "/*");
+        arena_print_string(string_arena, param.name);
+        arena_print_string(string_arena, "*/");
+      }
+      
+      param_center.size = arena_get_top(string_arena).cast(*u8) - param_center.at;
+      
+      param_declaration : String;
+      param_declaration = c89_declaration_from_type_and_center(param.type, param_center, string_arena);
+      
+      new_list : String; new_list.at = arena_get_top(string_arena);
+      
+      if list.at
+      {
+        arena_print_string(string_arena, list);
+        arena_print_string(string_arena, ", ");
+      }
+      
+      arena_print_string(string_arena, param_declaration);
+      new_list.size = arena_get_top(string_arena).cast(*u8) - new_list.at;
+      
+      list = new_list;
+    }
+    
+    new_center : String; new_center.at = arena_get_top(string_arena);
+    arena_print_string(string_arena, center);
+    arena_print_string(string_arena, "(");
+    
+    if list.at  arena_print_string(string_arena, list);
+    else        arena_print_string(string_arena, "void");
+    
+    arena_print_string(string_arena, ")");
+    new_center.size = arena_get_top(string_arena).cast(*u8) - new_center.at;
+    
+    result = c89_declaration_from_type_and_center(type.sub_type, new_center, string_arena);
+  }
+  else if type_kind == TYPE_STRUCT
+  {
+    result.at = arena_get_top(string_arena);
+    debug_assert(__dbgpos, type.c89_struct_name.at != null);
+    arena_print_string(string_arena, type.c89_struct_name);
+    arena_print_string(string_arena, " ");
+    arena_print_string(string_arena, center);
+    result.size = arena_get_top(string_arena).cast(*u8) - result.at;
+  }
+  else
+  {
+    if type.debug_token  complain(0, type.debug_token, "can't make the declaration from this");
+    debug_assert(__dbgpos, 0);
+  }
+  
+  debug_assert(__dbgpos, result.at != null);
+  debug_assert(__dbgpos, result.size >= 0);
+  return result;
+}
+
+c89_compile_integer_constant : (value: u64, output_arena: *Arena) -> void
+{
+  if value <= 0xFFFFFFFF
+  {
+    arena_print_string(output_arena, "(s64)0x");
+    arena_print_u64(output_arena, value, 16, 0);
+  }
+  else
+  {
+    debug_assert(__dbgpos, 0);
+    // TODO: implement 64-bit integer constants
+    // arena_print_cstring(output_arena, c_string("(((u64)0x"));
+    // arena_print_u64(output_arena, (value >> 32) & 0xFFFFFFFF, 16, 0);
+    // arena_print_cstring(output_arena, c_string(" << 32) | ((u64)0x"));
+    // arena_print_u64(output_arena, (value >> 0 ) & 0xFFFFFFFF, 16, 0);
+    // arena_print_cstring(output_arena, c_string("))"));
+  }
+}
+
+c89_backend : (root: *Ast_Node, output_arena: *Arena) -> void
+{
+  ctx : C89_Context;
+  ctx.decl_arena = arena_create(1024 * 1024 * 1024); // 1 GB
+  ctx.impl_arena = arena_create(1024 * 1024 * 1024); // 1 GB
+
+  main_symbol : *Symbol;
+  main_symbol = array_find_symbol_by_name(root.scope.num_symbols, root.scope.symbols, "main");
+  
+  if main_symbol == null  complain(0, null, "'main' function must be defined");
+  
+  main_symbol.num_uses += 1;
+
+  arena_print_string(ctx.decl_arena, "\n");
+  arena_print_string(ctx.decl_arena, "#include <stddef.h>\n");
+  arena_print_string(ctx.decl_arena, "#include <stdint.h>\n");
+  arena_print_string(ctx.decl_arena, "\n");
+  arena_print_string(ctx.decl_arena, "typedef uint8_t  u8;\n");
+  arena_print_string(ctx.decl_arena, "typedef uint16_t u16;\n");
+  arena_print_string(ctx.decl_arena, "typedef uint32_t u32;\n");
+  arena_print_string(ctx.decl_arena, "typedef uint64_t u64;\n");
+  arena_print_string(ctx.decl_arena, "typedef int8_t   s8;\n");
+  arena_print_string(ctx.decl_arena, "typedef int16_t  s16;\n");
+  arena_print_string(ctx.decl_arena, "typedef int32_t  s32;\n");
+  arena_print_string(ctx.decl_arena, "typedef int64_t  s64;\n");
+  arena_print_string(ctx.decl_arena, "\n");
+  arena_print_string(ctx.decl_arena, "typedef struct String String;\n");
+  arena_print_string(ctx.decl_arena, "\n");
+  arena_print_string(ctx.decl_arena, "struct String\n");
+  arena_print_string(ctx.decl_arena, "{\n");
+  arena_print_string(ctx.decl_arena, "  u8  *at;\n");
+  arena_print_string(ctx.decl_arena, "  s64  size;\n");
+  arena_print_string(ctx.decl_arena, "};\n");
+  arena_print_string(ctx.decl_arena, "\n");
+  
+  c89_compile_statement_recursively(ctx.&, root, 0, ctx.impl_arena);
+  
+  // the runtime:
+  
+  arena_print_string(ctx.impl_arena, "\n");
+  arena_print_string(ctx.impl_arena, "void _start(void)\n");
+  arena_print_string(ctx.impl_arena, "{\n");
+  arena_print_string(ctx.impl_arena, "  extern void ExitProcess(u32 status);\n");
+  arena_print_string(ctx.impl_arena, "  \n");
+  
+  num_voided : s64;
+  
+  c_for i: s64; i < root.scope.num_symbols; i += 1;
+  {
+    symbol : *Symbol; symbol = root.scope.symbols[i];
+    
+    if symbol.num_uses == 0 and symbol.storage == STORAGE_STATIC
+    {
+      arena_print_string(ctx.impl_arena, "  (void) ");
+      arena_print_string(ctx.impl_arena, symbol.c89_name);
+      arena_print_string(ctx.impl_arena, ";\n");
+      num_voided += 1;
+    }
+  }
+  
+  if num_voided > 0  arena_print_string(ctx.impl_arena, "  \n");
+  
+  debug_assert(__dbgpos, main_symbol.type != null);
+  
+  if main_symbol.type.type_kind != TYPE_FUNCTION
+  or main_symbol.type.sub_type.type_kind != TYPE_VOID
+  or main_symbol.type.num_params != 0
+    complain(0, main_symbol.name_token, "'main' must be a function of type '() -> void'");
+  
+  arena_print_string(ctx.impl_arena, "  ");
+  arena_print_string(ctx.impl_arena, main_symbol.c89_name);
+  arena_print_string(ctx.impl_arena, "();\n");
+  arena_print_string(ctx.impl_arena, "  ExitProcess(0);\n");
+  arena_print_string(ctx.impl_arena, "}\n");
+  arena_print_string(ctx.impl_arena, "\n");
+  arena_print_string(ctx.impl_arena, "\n");
+  arena_print_string(ctx.impl_arena, "\n");
+  
+  // we gonna combine!
+  
+  arena_push_copy(output_arena, ctx.decl_arena.pushed, ctx.decl_arena.at);
+  arena_push_copy(output_arena, ctx.impl_arena.pushed, ctx.impl_arena.at);
+}
+
+c89_print_string_constant_from_bytes : (size: s64, bytes: *u8, arena: *Arena, add_debug_terminator: u64) -> void
+{
+  arena_print_string(arena, "(u8 *)\"");
+  
+  c_for i: s64; i < size; i += 1;
+  {
+    arena_print_string(arena, "\\x");
+    arena_print_u64(arena, bytes[i], 16, 2);
+  }
+  
+  if add_debug_terminator  arena_print_string(arena, "###");
+  
+  arena_print_string(arena, "\"");
+}
+
+c89_print_declaration : (arena: *Arena, type: *Type, symbol_opt: *Symbol, alt_center: String) -> void
+{
+  decl_con : Construction; decl_con = construction_begin(construction_arena);
+
+  center : String;
+  
+  if symbol_opt
+  {
+    arena_print_string(decl_con.arena, symbol_opt.c89_name);
+    
+    if g_option_print_actual_names
+    {
+      arena_print_string(decl_con.arena, "/*");
+      arena_print_string(decl_con.arena, symbol_opt.name_token.string);
+      arena_print_string(decl_con.arena, "*/");
+    }
+    
+    center.at = decl_con.content;
+    center.size = construction_get_size(decl_con);
+  }
+  else
+  {
+    center = alt_center;
+  }
+  
+  decl : String; decl = c89_declaration_from_type_and_center(type, center, decl_con.arena);
+  arena_print_string(arena, decl);
+  
+  construction_end(decl_con);
+}
+
+c89_compile_expression_recursively : (ctx: *C89_Context, expr: *Ast_Node, output_arena: *Arena) -> void
+{
+  debug_assert(__dbgpos, expr != null);
+  debug_assert(__dbgpos, output_arena != null);
+  
+  expr_kind : s64; expr_kind = expr.node_kind;
+  
+  binary_string : String;
+  unary_string  : String;
+  
+       if expr_kind == `node binary +`    binary_string = "+";
+  else if expr_kind == `node binary -`    binary_string = "-";
+  else if expr_kind == `node binary *`    binary_string = "*";
+  else if expr_kind == `node binary /`    binary_string = "/";
+  else if expr_kind == `node binary %`    binary_string = "%";
+  else if expr_kind == `node binary &`    binary_string = "&";
+  else if expr_kind == `node binary ^`    binary_string = "^";
+  else if expr_kind == `node binary |`    binary_string = "|";
+  else if expr_kind == `node binary <`    binary_string = "<";
+  else if expr_kind == `node binary >`    binary_string = ">";
+  else if expr_kind == `node binary =`    binary_string = "=";
+  else if expr_kind == `node binary +=`   binary_string = "+=";
+  else if expr_kind == `node binary -=`   binary_string = "-=";
+  else if expr_kind == `node binary *=`   binary_string = "*=";
+  else if expr_kind == `node binary /=`   binary_string = "/=";
+  else if expr_kind == `node binary %=`   binary_string = "%=";
+  else if expr_kind == `node binary &=`   binary_string = "&=";
+  else if expr_kind == `node binary ^=`   binary_string = "^=";
+  else if expr_kind == `node binary |=`   binary_string = "|=";
+  else if expr_kind == `node binary <=`   binary_string = "<=";
+  else if expr_kind == `node binary >=`   binary_string = ">=";
+  else if expr_kind == `node binary ==`   binary_string = "==";
+  else if expr_kind == `node binary !=`   binary_string = "!=";
+  else if expr_kind == `node binary <<`   binary_string = "<<";
+  else if expr_kind == `node binary >>`   binary_string = ">>";
+  else if expr_kind == `node binary <<=`  binary_string = "<<=";
+  else if expr_kind == `node binary >>=`  binary_string = ">>=";
+  else if expr_kind == `node binary and`  binary_string = "&&";
+  else if expr_kind == `node binary or`   binary_string = "||";
+  else if expr_kind == `node unary +`    unary_string = "+";
+  else if expr_kind == `node unary -`    unary_string = "-";
+  else if expr_kind == `node unary ^`    unary_string = "~";
+  else if expr_kind == `node unary not`  unary_string = "!";
+  else if expr_kind == `node unary .*`   unary_string = "*";
+  else if expr_kind == `node unary .&`   unary_string = "&";
+  
+  if binary_string.at
+  {
+    debug_assert(__dbgpos, expr.expr_0 != null);
+    debug_assert(__dbgpos, expr.expr_1 != null);
+    
+    arena_print_string(output_arena, "(");
+    c89_compile_expression_recursively(ctx, expr.expr_0, output_arena);
+    arena_print_string(output_arena, ") ");
+    arena_print_string(output_arena, binary_string);
+    arena_print_string(output_arena, " (");
+    c89_compile_expression_recursively(ctx, expr.expr_1, output_arena);
+    arena_print_string(output_arena, ")");
+  }
+  else if unary_string.at
+  {
+    debug_assert(__dbgpos, expr.expr_0 != null);
+    
+    arena_print_string(output_arena, unary_string);
+    arena_print_string(output_arena, "(");
+    c89_compile_expression_recursively(ctx, expr.expr_0, output_arena);
+    arena_print_string(output_arena, ")");
+  }
+  else if expr_kind == `node primary name`
+  {
+    symbol: *Symbol; symbol = expr.symbol_by_name;
+    debug_assert(__dbgpos, symbol != null);
+    
+    if symbol.storage != STORAGE_C_ENUM  arena_print_string(output_arena, symbol.c89_name);
+    else                                 c89_compile_integer_constant(symbol.c_enum_value, output_arena);
+  }
+  else if expr_kind == `node function call`
+  {
+    arena_print_string(output_arena, "(");
+    c89_compile_expression_recursively(ctx, expr.expr_0, output_arena);
+    arena_print_string(output_arena, ")");
+    
+    function_type: *Type; function_type = expr.expr_0.value.type; // TODO: let the frontend save it for you?
+    
+    if function_type.type_kind == `node unary *`  function_type = function_type.sub_type;
+    
+    arena_print_string(output_arena, "(");
+    
+    c_for i: s64; i < expr.num_items; i += 1;
+    {
+      arg : *Ast_Node; arg = expr.items[i];
+      arg_value : Expr_Value; arg_value = rvalue_from(arg.value); // TODO: let the frontend save it for you?
+      param : Name_And_Type; param = function_type.params[i];
+      
+      if type_kind_is_integer(param.type.type_kind) and type_kind_is_integer(arg_value.type.type_kind)
+      {
+        dst_size : s64; dst_size = type_size_of(param.type);
+        src_size : s64; src_size = type_size_of(arg_value.type);
+        
+        if dst_size < src_size
+        {
+          arena_print_string(output_arena, "(");
+          
+          type_kind : s64; type_kind = param.type.type_kind;
+          
+          // TODO: type_kind_to_string function
+               if type_kind == TYPE_U64  arena_print_string(output_arena, "u64");
+          else if type_kind == TYPE_U32  arena_print_string(output_arena, "u32");
+          else if type_kind == TYPE_U16  arena_print_string(output_arena, "u16");
+          else if type_kind == TYPE_U8   arena_print_string(output_arena, "u8" );
+          else if type_kind == TYPE_S64  arena_print_string(output_arena, "s64");
+          else if type_kind == TYPE_S32  arena_print_string(output_arena, "s32");
+          else if type_kind == TYPE_S16  arena_print_string(output_arena, "s16");
+          else if type_kind == TYPE_S8   arena_print_string(output_arena, "s8" );
+          else debug_assert(__dbgpos, 0);
+          
+          arena_print_string(output_arena, ")");
+        }
+      }
+      
+      arena_print_string(output_arena, "(");
+      c89_compile_expression_recursively(ctx, arg, output_arena);
+      arena_print_string(output_arena, ")");
+      
+      if i + 1 < expr.num_items  arena_print_string(output_arena, ", ");
+    }
+    
+    arena_print_string(output_arena, ")");
+  }
+  else if expr_kind == `node primary null`
+  {
+    arena_print_string(output_arena, "NULL");
+  }
+  else if expr_kind == `node primary string` or expr_kind == `node primary __dbgpos`
+  {
+    debug_assert(__dbgpos, expr.value.is_constexpr);
+    debug_assert(__dbgpos, expr.value.as_string.at != null);
+    debug_assert(__dbgpos, expr.value.as_string.size >= 0);
+    
+    arena_print_string(ctx.decl_arena, "static String ");
+    
+    string_id : String; string_id = allocate_unique_eternal_identifier();
+    
+    arena_print_string(ctx.decl_arena, string_id);
+    arena_print_string(ctx.decl_arena, " = {\n  ");
+    c89_print_string_constant_from_bytes(expr.value.as_string.size, expr.value.as_string.at, ctx.decl_arena, 1);
+    arena_print_string(ctx.decl_arena, ",\n  ");
+    c89_compile_integer_constant(expr.value.as_string.size, ctx.decl_arena);
+    arena_print_string(ctx.decl_arena, "\n};\n");
+    
+    arena_print_string(output_arena, string_id);
+  }
+  else if expr_kind == `node primary integer` or expr_kind == `node primary character`
+  {
+    debug_assert(__dbgpos, expr.value.is_constexpr);
+    c89_compile_integer_constant(expr.value.as_u64, output_arena);
+  }
+  else if expr_kind == `node unary size_of` or expr_kind == `node unary alignment_of`
+  {
+    debug_assert(__dbgpos, expr.value.is_constexpr);
+    c89_compile_integer_constant(expr.value.as_u64, output_arena);
+  }
+  else if expr_kind == `node binary index`
+  {
+    debug_assert(__dbgpos, expr.expr_0 != null);
+    debug_assert(__dbgpos, expr.expr_1 != null);
+    
+    arena_print_string(output_arena, "(");
+    c89_compile_expression_recursively(ctx, expr.expr_0, output_arena);
+    arena_print_string(output_arena, ")");
+    arena_print_string(output_arena, "[");
+    c89_compile_expression_recursively(ctx, expr.expr_1, output_arena);
+    arena_print_string(output_arena, "]");
+  }
+  else if expr_kind == `node binary cast`
+  {
+    dst_type : *Type; dst_type = expr.value.type;
+    src_type : *Type; src_type = expr.expr_0.value.type;
+    
+    is_fp : u64; is_fp = (src_type.type_kind == TYPE_POINTER_TO and src_type.sub_type.type_kind == TYPE_FUNCTION);
+    if src_type.type_kind == TYPE_FUNCTION or is_fp
+      complain(0, expr.token, "I don't know how to do this in C89 without warnings");
+    
+    arena_print_string(output_arena, "(");
+    c89_print_declaration(output_arena, dst_type, null, "");
+    arena_print_string(output_arena, ")");
+    
+    arena_print_string(output_arena, "(");
+    c89_compile_expression_recursively(ctx, expr.expr_0, output_arena);
+    arena_print_string(output_arena, ")");
+  }
+  else if expr_kind == `node binary .`
+  {
+    arena_print_string(output_arena, "(");
+    c89_compile_expression_recursively(ctx, expr.expr_0, output_arena);
+    arena_print_string(output_arena, ")");
+    
+    if expr.expr_0.value.type.type_kind == TYPE_POINTER_TO  arena_print_string(output_arena, "->");
+    else                                                    arena_print_string(output_arena, ".");
+    
+    debug_assert(__dbgpos, expr.value.member_ref != null);
+    debug_assert(__dbgpos, expr.value.member_ref.c89_name.at != null);
+    arena_print_string(output_arena, expr.value.member_ref.c89_name);
+  }
+  else
+  {
+    complain(0, expr.token, "iduno how to compile this");
+  }
+}
+
+c89_compile_block : (ctx: *C89_Context, block_stmt: *Ast_Node, spaces: s64, output_arena: *Arena) -> void
+{
+  if block_stmt.node_kind == `node statement list`
+  {
+    c89_compile_statement_recursively(ctx, block_stmt, spaces, output_arena);
+  }
+  else
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_string(output_arena, "{\n");
+    c89_compile_statement_recursively(ctx, block_stmt, spaces + 2, output_arena);
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_string(output_arena, "}\n");
+  }
+}
+
+c89_compile_local_symbol : (symbol: *Symbol, sub_spaces: s64, output_arena: *Arena) -> void
+{
+  debug_assert(__dbgpos, symbol != null);
+  debug_assert(__dbgpos, symbol.type != null);
+  debug_assert(__dbgpos, symbol.storage != STORAGE_C_TYPEDEF);
+  
+  // compile the declaration:
+  arena_print_row(output_arena, sub_spaces, ' ');
+  
+       if symbol.storage == STORAGE_EXTERN  arena_print_string(output_arena, "extern ");
+  else if symbol.storage == STORAGE_STATIC  arena_print_string(output_arena, "static ");
+  
+  c89_print_declaration(output_arena, symbol.type, symbol, "");
+  
+  if symbol.storage == STORAGE_LOCAL
+  {
+         if symbol.type.type_kind == TYPE_POINTER_TO  arena_print_string(output_arena, " = NULL");
+    else if symbol.type.type_kind == TYPE_STRUCT      arena_print_string(output_arena, " = {0}");
+    else                                              arena_print_string(output_arena, " = 0");
+  }
+  
+  arena_print_string(output_arena, ";\n");
+}
+
+c89_compile_statement_recursively : (ctx: *C89_Context, stmt: *Ast_Node, spaces: s64, output_arena: *Arena) -> void
+{
+  stmt_kind : s64; stmt_kind = stmt.node_kind;
+  
+  if stmt_kind == `node statement root`
+  {
+    num_typedefs: s64; num_typedefs = c89_sorted_typedefs_arena.pushed / size_of(*Symbol);
+    // num_typedefs: s64; num_typedefs = g_next_definition_index;
+    typedefs : **Symbol; typedefs = c89_sorted_typedefs_arena.at.cast(*void);
+    
+    c_for i: s64; i < num_typedefs; i += 1;
+    {
+      symbol : *Symbol; symbol = typedefs[i];
+      
+      debug_assert(__dbgpos, symbol != null);
+      debug_assert(__dbgpos, symbol.type != null);
+      debug_assert(__dbgpos, symbol.storage == STORAGE_C_TYPEDEF);
+      debug_assert(__dbgpos, symbol.definition_index == i + 1);
+      debug_assert(__dbgpos, symbol.type.type_kind == TYPE_STRUCT);
+      
+      if 0
+      {
+        console_error_print_string("  typedef ... ");
+        console_error_print_string(symbol.name_token.string);
+        console_error_print_string(";\n");
+      }
+      
+      arena_print_row(output_arena, spaces, ' ');
+      arena_print_string(output_arena, "typedef struct ");
+      arena_print_string(output_arena, symbol.type.c89_struct_name);
+      arena_print_string(output_arena, " ");
+      arena_print_string(output_arena, symbol.type.c89_struct_name);
+      arena_print_string(output_arena, ";\n");
+    }
+    
+    if num_typedefs > 0  arena_print_string(output_arena, "\n");
+    
+    //
+    
+    num_structs : s64;
+    
+    c_for i: s64; i < num_typedefs; i += 1;
+    {
+      symbol : *Symbol; symbol = typedefs[i];
+      
+      if symbol.type.type_kind == TYPE_STRUCT
+      {
+        arena_print_row(output_arena, spaces, ' ');
+        arena_print_string(output_arena, "struct ");
+        arena_print_string(output_arena, symbol.type.c89_struct_name);
+        arena_print_string(output_arena, "\n");
+        
+        arena_print_row(output_arena, spaces, ' ');
+        arena_print_string(output_arena, "{\n");
+        
+        sub_spaces : s64; sub_spaces = spaces + 2;
+        
+        c_for member_index: s64; member_index < symbol.type.num_members; member_index += 1;
+        {
+          member : Name_And_Type; member = symbol.type.members[member_index];
+          
+          arena_print_row(output_arena, sub_spaces, ' ');
+          
+          debug_assert(__dbgpos, member.c89_name.at != null);
+          
+          c89_print_declaration(output_arena, member.type, null, member.c89_name);
+          
+          arena_print_string(output_arena, ";\n");
+        }
+        
+        arena_print_row(output_arena, spaces, ' ');
+        arena_print_string(output_arena, "};\n");
+        
+        num_structs += 1;
+      }
+    }
+    
+    if num_structs > 0  arena_print_string(output_arena, "\n");
+    
+    // declare:
+    
+    c_for i: s64; i < stmt.num_items; i += 1;
+    {
+      node : *Ast_Node; node = stmt.items[i];
+      
+      if node.node_kind == `node binary :`
+      {
+        symbol : *Symbol; symbol = node.expr_0.symbol_by_name;
+        debug_assert(__dbgpos, symbol != null);
+        debug_assert(__dbgpos, symbol.type != null);
+        
+        if symbol.storage == STORAGE_C_TYPEDEF  continue;
+        
+        // compile the declaration:
+        
+        arena_print_row(output_arena, spaces, ' ');
+        
+             if symbol.storage == STORAGE_EXTERN  arena_print_string(output_arena, "extern ");
+        else if symbol.storage == STORAGE_STATIC  arena_print_string(output_arena, "static ");
+        
+        c89_print_declaration(output_arena, symbol.type, symbol, "");
+        
+        arena_print_string(output_arena, ";\n");
+      }
+    }
+    
+    arena_print_string(output_arena, "\n");
+    
+    // compile all the children:
+    
+    c_for i: s64; i < stmt.num_items; i += 1;
+      c89_compile_statement_recursively(ctx, stmt.items[i], spaces, output_arena);
+  }
+  else if stmt_kind == `node binary :`
+      and stmt.expr_1.node_kind == `node function type`
+      and stmt.stmt_0 != null
+  {
+    arena_print_string(output_arena, "\n");
+    arena_print_row(output_arena, spaces, ' ');
+  
+    symbol : *Symbol; symbol = stmt.expr_0.symbol_by_name;
+    debug_assert(__dbgpos, symbol != null);
+    
+    c89_print_declaration(output_arena, symbol.type, symbol, "");
+    
+    arena_print_string(output_arena, "\n");
+    c89_compile_statement_recursively(ctx, stmt.stmt_0, spaces, output_arena);
+  }
+  else if stmt_kind == `node statement list`
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_string(output_arena, "{\n");
+    
+    sub_spaces : s64; sub_spaces = spaces + 2;
+    
+    // declare:
+    num_decls : s64;
+    
+    c_for i: s64; i < stmt.num_items; i += 1;
+    {
+      sub_node : *Ast_Node; sub_node = stmt.items[i];
+      
+      if sub_node.node_kind == `node binary :`
+      {
+        debug_assert(__dbgpos, sub_node.expr_0.symbol_by_name != null);
+        c89_compile_local_symbol(sub_node.expr_0.symbol_by_name, sub_spaces, output_arena);
+        num_decls += 1;
+      }
+    }
+    
+    if num_decls > 0  arena_print_string(output_arena, "\n");
+    
+    num_voided : s64;
+    
+    scope_holder : *Ast_Node; scope_holder = stmt;
+    
+    c_for i: s64; i < scope_holder.scope.num_symbols; i += 1;
+    {
+      symbol : *Symbol; symbol = scope_holder.scope.symbols[i];
+      
+      if symbol.num_uses == 0
+      {
+        arena_print_row(output_arena, sub_spaces, ' ');
+        arena_print_string(output_arena, "(void) ");
+        arena_print_string(output_arena, symbol.c89_name);
+        arena_print_string(output_arena, ";\n");
+        num_voided += 1;
+      }
+    }
+    
+    if num_voided > 0  arena_print_string(output_arena, "\n");
+    
+    // compile all the children:
+    c_for i: s64; i < stmt.num_items; i += 1;
+      c89_compile_statement_recursively(ctx, stmt.items[i], sub_spaces, output_arena);
+    
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_string(output_arena, "}\n");
+  }
+  else if stmt_kind == `node statement while`
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_string(output_arena, "while (");
+    c89_compile_expression_recursively(ctx, stmt.expr_0, output_arena);
+    arena_print_string(output_arena, ")\n");
+    
+    c89_compile_block(ctx, stmt.stmt_0, spaces, output_arena);
+  }
+  else if stmt_kind == `node statement do-while`
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_string(output_arena, "do\n");
+    c89_compile_block(ctx, stmt.stmt_0, spaces, output_arena);
+  
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_string(output_arena, "while (");
+    c89_compile_expression_recursively(ctx, stmt.expr_0, output_arena);
+    arena_print_string(output_arena, ");\n");
+  }
+  else if stmt_kind == `node statement if-else`
+  {
+    if not(stmt.expr_0.value.is_constexpr and stmt.expr_0.value.as_u64 == 0 and stmt.stmt_1 == null)
+    {
+      arena_print_row(output_arena, spaces, ' ');
+      arena_print_string(output_arena, "if (");
+      c89_compile_expression_recursively(ctx, stmt.expr_0, output_arena);
+      arena_print_string(output_arena, ")\n");
+      
+      c89_compile_block(ctx, stmt.stmt_0, spaces, output_arena);
+      
+      next_else : *Ast_Node; next_else = stmt.stmt_1;
+      
+      while next_else != null and next_else.node_kind == `node statement if-else`
+      {
+        arena_print_row(output_arena, spaces, ' ');
+        arena_print_string(output_arena, "else if (");
+        c89_compile_expression_recursively(ctx, next_else.expr_0, output_arena);
+        arena_print_string(output_arena, ")\n");
+        
+        c89_compile_block(ctx, next_else.stmt_0, spaces, output_arena);
+        
+        next_else = next_else.stmt_1;
+      }
+      
+      if next_else != null
+      {
+        arena_print_row(output_arena, spaces, ' ');
+        arena_print_string(output_arena, "else\n");
+        c89_compile_block(ctx, next_else, spaces, output_arena);
+      }
+    }
+  }
+  else if stmt_kind == `node statement c_for`
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_string(output_arena, "{\n");
+    
+    sub_spaces : s64; sub_spaces = spaces + 2;
+    
+    if stmt.expr_0
+    {
+      debug_assert(__dbgpos, stmt.expr_0.node_kind == `node binary :`);
+      
+      symbol : *Symbol; symbol = stmt.expr_0.expr_0.symbol_by_name;
+      debug_assert(__dbgpos, symbol != null);
+      
+      c89_compile_local_symbol(symbol, sub_spaces, output_arena);
+      
+      if symbol.num_uses == 0
+      {
+        arena_print_row(output_arena, sub_spaces, ' ');
+        arena_print_string(output_arena, "(void) ");
+        arena_print_string(output_arena, symbol.c89_name);
+        arena_print_string(output_arena, ";\n");
+      }
+    }
+    
+    arena_print_row(output_arena, sub_spaces, ' ');
+    arena_print_string(output_arena, "for (;");
+    
+    if stmt.expr_1
+    {
+      arena_print_string(output_arena, " ");
+      c89_compile_expression_recursively(ctx, stmt.expr_1, output_arena);
+    }
+    
+    arena_print_string(output_arena, ";");
+    
+    if stmt.expr_2
+    {
+      arena_print_string(output_arena, " ");
+      c89_compile_expression_recursively(ctx, stmt.expr_2, output_arena);
+    }
+    
+    arena_print_string(output_arena, ")\n");
+    
+    c89_compile_block(ctx, stmt.stmt_0, sub_spaces, output_arena);
+    
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_string(output_arena, "}\n");
+  }
+  else if stmt_kind == `node binary :`
+  {
+    // do nothing?
+  }
+  else if stmt_kind == `node c_enum`
+  {
+    // do nothing.
+  }
+  else if stmt_kind == `node statement break`
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_string(output_arena, "break;\n");
+  }
+  else if stmt_kind == `node statement continue`
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_string(output_arena, "continue;\n");
+  }
+  else if stmt_kind == `node statement return`
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    arena_print_string(output_arena, "return");
+    
+    if stmt.expr_0
+    {
+      arena_print_string(output_arena, " ");
+      c89_compile_expression_recursively(ctx, stmt.expr_0, output_arena);
+    }
+    
+    arena_print_string(output_arena, ";\n");
+  }
+  else
+  {
+    arena_print_row(output_arena, spaces, ' ');
+    c89_compile_expression_recursively(ctx, stmt, output_arena);
+    arena_print_string(output_arena, ";\n");
+  }
+}
+
+c89_print_address : (arena: *Arena, address: s64) -> void
+{
+  arena_print_string(arena, "A_");
+  arena_print_u64(arena, address, 16, 5); // to pad or not to pad that is the question
+}
+
+

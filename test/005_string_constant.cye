@@ -1,0 +1,18 @@
+// 005_string_constant.cye
+
+main : () -> void
+{
+  string : *String;
+  
+  string = "String Constant\n";
+  
+  w_WriteFile(w_GetStdHandle(-11), string.at, string.size, null, null);
+}
+
+c_extern c_name GetStdHandle
+w_GetStdHandle : (std_handle: s32) -> *void;
+
+c_extern c_name WriteFile
+w_WriteFile : (file_handle: *void, data: *void, size: u32, size_out_opt: *u32, overlapped_in_out_opt: *void) -> s32;
+
+

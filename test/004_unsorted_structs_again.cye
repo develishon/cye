@@ -1,0 +1,25 @@
+// 004_unsorted_structs_again.cye
+
+main : () -> void
+{
+}
+
+c_typedef A_Struct : struct
+{
+  ap : *A_Struct;
+  b1 : B_Struct;
+  b2 : B_Struct;
+};
+
+c_typedef B_Struct : struct
+{
+  u : u64;
+};
+
+c_typedef C_Struct : struct
+{
+  c : *C_Struct;
+  a : A_Struct;
+};
+
+

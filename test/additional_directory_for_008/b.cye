@@ -1,0 +1,13 @@
+// b.cye
+
+v7 : s64;
+
+c_include_once "e.cye";
+
+v8 : s64;
+
+c_include_once "s.cye";
+
+v9 : s64;
+
+

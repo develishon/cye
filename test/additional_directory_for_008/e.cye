@@ -1,0 +1,10 @@
+// e.cye
+
+v_from_e : s64;
+
+main : () -> void
+{
+  
+}
+
+

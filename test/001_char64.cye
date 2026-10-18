@@ -1,0 +1,10 @@
+// 001_char64.cye
+
+main : () -> void
+{
+  x : u64;
+  
+  x = 'ABC';
+}
+
+
